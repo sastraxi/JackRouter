@@ -7,9 +7,8 @@ A guided walk through the files that matter, what's in them, and what's safe to 
 ```
 daemon/                  Source of truth for the userland process
 driver/                  Source of truth for the HAL bundle (Xcode project)
-libs/                    Stale earlier iteration — ignore (see "Dead code" below)
 tools/                   Two tiny shm utilities
-README.md                Stale — says `git checkout JackBridge` (branch doesn't exist)
+README.md                Quick-start (rewrite slated for Phase 3.8)
 LICENSE                  GPL (inherited from JACK)
 ```
 
@@ -45,7 +44,7 @@ build.sh             2 lines   `g++ -std=c++11 ... -ljack -framework CoreAudio .
 ## `driver/` — the AudioServerPlugIn HAL bundle
 
 ```
-JackBridgePlugIn.xcodeproj/      Xcode project. x86_64 only, no MACOSX_DEPLOYMENT_TARGET.
+JackBridgePlugIn.xcodeproj/      Xcode project. Universal (arm64 + x86_64), deployment target 13.0, C++17.
 JackBridge/Plug-In/
     SA_PlugIn.cpp                AudioServerPlugInDriverRef boilerplate
     SA_PlugIn.h
@@ -56,8 +55,7 @@ JackBridge/Plug-In/
     SA_Object.h
     JackBridge.h                 BYTE-DUPLICATED copy of daemon/JackBridge.h
     Resources/                   Bundle resources
-PublicUtility/                   Vendored 2012-era Apple CoreAudio sample utilities
-ReadMe.txt                       Original SimpleAudio sample readme — ignore
+PublicUtility/                   Vendored 2012-era Apple CoreAudio sample utilities (only what's actually #included)
 ```
 
 **`SA_Device.cpp` highlights:**
@@ -69,19 +67,7 @@ ReadMe.txt                       Original SimpleAudio sample readme — ignore
 - L1420, L1450 `ReadInputData` / `WriteOutputData` — the realtime hot path. Acquires `CAMutex mIOMutex` (Apple's SimpleAudio does the same; technically a priority-inversion hazard, but the work is just memcpy).
 - L1442, L1445, L1472, L1475 ring-buffer memcpy with hardcoded `8` bytes/frame and `* 2` channel multipliers. Comment says "byte sizes here assume a 16 bit stereo sample format" — comment is wrong, it's 32-bit float stereo.
 
-**`PublicUtility/`** is Apple's `CAException`, `CADebugMacros`, `CAMutex`, `CAAtomic` etc. from the `CoreAudioUtilityClasses` sample. Current SDKs ship some of these in public headers; Phase 1 should keep only what isn't in the SDK.
-
-## `libs/` — DEAD CODE
-
-```
-audio.hpp        Older audio scaffolding — unused
-coreAudio.hpp    Older CoreAudio glue — unused
-jackClient.cpp   Earlier copy of the JACK client — superseded by daemon/jackClient.cpp
-jackClient.hpp   Earlier header — superseded
-midi.hpp         MIDI bridging code (was used by JackBridgeWithMidi variant)
-```
-
-This whole directory is from a previous iteration. The current daemon does not link any of it. Searching for symbols will return hits in both `libs/` and `daemon/` — always trust `daemon/`. Phase 3 deletes `libs/` entirely.
+**`PublicUtility/`** is Apple's `CAException`, `CADebugMacros`, `CAMutex`, `CADispatchQueue`, and the `CACF*` wrappers from the 2012-era `CoreAudioUtilityClasses` sample. All compile clean against the current SDK — no header-overlap conflicts. Truly-unused files (`CADebugger`, `CAGuard`, `CAVolumeCurve`) were deleted in the Phase 1.1 sweep.
 
 ## `tools/`
 

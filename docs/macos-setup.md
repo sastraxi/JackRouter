@@ -53,9 +53,11 @@ launchctl unload ~/Library/LaunchAgents/com.jackbridge.jackd.plist
 
 The `jackd-launch` wrapper script invokes:
 ```
-jackd -R -d coreaudio -d ~:$(cat aggregate-uid) -r 48000 -p 128
+jackd -R -P 75 -d coreaudio -d ~:$(cat aggregate-uid) -r 48000 -p 128
 ```
 then `jack_load netmanager` once jackd is responsive (netJACK2 master client).
+
+**`-P 75` is required, not optional.** macOS jackd's default realtime priority is `10`, which loses to almost anything on the system; in testing, the netJACK2 master client missed its deadline ~2.3×/sec at the default and the slave connection actually dropped within 30s. `-P 75` (matching the Pi's typical setting) eliminates xruns. See `spike-b-clock-stability.md`.
 
 ## Selecting the device in a DAW
 
@@ -112,5 +114,5 @@ The hardened-runtime entitlement `com.apple.security.cs.disable-library-validati
 - **"JackBridge doesn't appear in Audio MIDI Setup"** — codesigning issue or non-arm64 build. Check `log show --predicate 'subsystem == "com.apple.audio.coreaudiod"' --last 10m` for rejection reasons.
 - **"DAW sees JackBridge but no audio"** — daemon not running, or daemon running but jackd not. `launchctl list | grep jackbridge`.
 - **"Audio works for 10 seconds then silence"** — jackd crashed. Without the (Phase 2) shutdown handler, JackBridge does not notice. `tail -f ~/Library/Logs/JackBridge/daemon.log`. Manual recovery: unload + reload both LaunchAgents.
-- **"Clicks/dropouts"** — almost certainly netJACK2 buffer underrun, not JackBridge. Increase Pi-side `jackd -d net -p <period>` or check Ethernet link quality (must be wired, must be gigabit, no Wi-Fi).
+- **"Clicks/dropouts"** — in order of likelihood: (1) Mac jackd missing `-P 75` (see above — default priority 10 underflows constantly); (2) Mac on Wi-Fi (netJACK2 needs wired gigabit on both ends); (3) Pi-side buffer too small — bump `jackd -p <period>`. Almost never JackBridge itself.
 - **"Stale shm region"** — daemon died dirty. `tools/rmshm` (after fixing it to target `/JackBridge`), or just reboot.

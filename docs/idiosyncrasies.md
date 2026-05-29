@@ -4,12 +4,6 @@ The things that will surprise you. Each item has a file:line citation where appl
 
 ## Repo / build
 
-### The JackBridge branch doesn't exist
-README says `git checkout JackBridge`. There is no such branch. The JackBridge rewrite landed on `master` in commits `e539196` ("Initial commit of JackBridge") and `873326d` ("Reconstruct source hierarchy"). Trust `master`.
-
-### `libs/` is dead code
-A previous iteration of the project. Nothing in the current build links against it. Grep results from `libs/` are almost always misleading. See `codebase-tour.md`. Phase 3 deletes it.
-
 ### `JackBridge.h` is byte-duplicated
 `daemon/JackBridge.h` and `driver/JackBridge/Plug-In/JackBridge.h` are identical copies of the IPC contract. Edit one without the other and you silently corrupt shm. Phase 3 dedupes via Xcode workspace.
 
@@ -83,6 +77,17 @@ Both the HAL IO ops and the daemon's JACK process callback must not allocate, sy
 ## Aggregate device pitfall
 
 If a user creates an aggregate device that **includes JackBridge** as a sub-device and points jackd at that aggregate, CoreAudio does not detect the cycle. You get silence, hard mute, or runaway depending on buffer ordering — never a clean error. Defensive check in the daemon (Phase 2): enumerate the aggregate jackd is bound to via `kAudioAggregateDevicePropertyActiveSubDeviceList` and refuse to start if our UID is in it.
+
+## jackd on macOS
+
+### Default realtime priority is 10
+`jackd -R` on macOS starts at priority 10 unless `-P N` is given explicitly. The Pi-side default (running as a service) is 75. With the master at 10 and any browser / DAW / coreaudiod work going on, the netJACK2 master client misses deadlines constantly and slaves disconnect. `jackd-launch` must pass `-P 75` (or higher). See `spike-b-clock-stability.md`.
+
+### `jackd -d coreaudio -d "<friendly name>"` is silently ignored
+The user-visible device name (e.g. `"Steinberg UR22C"`, the same string Audio MIDI Setup shows) does not select the device. jackd falls back to "default input + default output" and, if those differ, auto-creates a cross-clock aggregate with a `clock drift compensation would be needed` warning — which is exactly the cross-clock topology Config B forbids. Use the internal CoreAudio name from `jackd -d coreaudio -l` instead (e.g. `AppleUSBAudioEngine:Yamaha Corporation:Steinberg UR22C:120000:1,2`). For the production aggregate, this is `~:<aggregate-uid>` as documented in `macos-setup.md`.
+
+### `jackd -d coreaudio` does **not** take exclusive control of the device
+Even while jackd is bound to a CoreAudio device, that device remains available as a system output — apps can play through it and the audio mixes with whatever's going through jackd. Useful (system audio keeps working during development) but a trap: **if the user sets the same device as both jackd's backend and the system output, they get a feedback loop / mix-of-everything** with no clear error. The aggregate-device strategy (built-in output as the aggregate's sub-device) avoids this for production, since the user is unlikely to pick the aggregate as their normal system output. Pass `-H`/`--hog` to force exclusive access if needed; we don't, to allow side-by-side dev workflows.
 
 ## Naming
 

@@ -15,33 +15,22 @@ NOTE: This is still experimental prototype implementation. Please be careful usi
 - Supports only 44.1/48kHz mode.
 
 ## Build
-Checkout the codes in "JackBridge" branch.
-
-```
-git checkout JackBridge
-```
+All JackBridge code lives on `master` — there is no `JackBridge` branch despite earlier docs to the contrary.
 
 JackBridge consists of two parts, a daemon and a user-space Core Audio driver.
 
 - JackBridge daemon
 
-  You can build two versions of daemon.
+  ```
+  cd daemon
+  ./build.sh
+  ```
 
-  JackBridge: bridge only audio (RtMidi library not required)
-  JackBridgeWithMidi: bridge audio and MIDI (RtMidi library required)
-
-  [rtmidi](http://www.music.mcgill.ca/~gary/rtmidi/) libraries are required to build
-  JackBridgeWithMidi. Please install before build.
-  To build the JackBridge, just run 'build.sh' under the directory.
-
-```
-cd daemon
-./build.sh
-```
+  (`build.sh` is a 2-line `g++` invocation, to be replaced with an Xcode target in Phase 1.2 — see `PLAN.md`.)
 
 - JackBridge driver
 
-  Build the project named "JackBridgePlugIn.xcodeproj" with Xcode.
+  Build the project named "JackBridgePlugIn.xcodeproj" with Xcode (or `xcodebuild -configuration Release`). Produces a universal arm64+x86_64 `.driver` bundle.
 
 ## Installation
 - JackBridge daemon

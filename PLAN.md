@@ -12,15 +12,11 @@ This plan assumes the architectural decisions in `docs/architecture.md`:
 
 Two unknowns can derail estimates if not de-risked early. Both are short.
 
-### Spike A — sign + load a hello-world AudioServerPlugIn (½ day)
-Build the simplest possible AudioServerPlugIn (BlackHole `develop` as a starting point), sign with Developer ID Application + hardened runtime, install to `/Library/Audio/Plug-Ins/HAL/`, `killall coreaudiod`, confirm it appears in Audio MIDI Setup on a clean Sequoia and Tahoe machine. De-risks the entire signing/loading pipeline before touching JackBridge code.
+### Spike A — sign + load a hello-world AudioServerPlugIn — **PASS (Sequoia)**
+Done on Sequoia 15.7.2 / M1 Pro with ad-hoc sign. Tahoe + Developer ID deferred. See [docs/spike-a-hal-loading.md](docs/spike-a-hal-loading.md).
 
-**Pass criteria:** device visible in Audio MIDI Setup on both Sequoia and Tahoe, Apple Silicon, with no Console errors from `coreaudiod`.
-
-### Spike B — confirm Config B clock stability (½ day)
-On a real Pi + Mac + Ethernet rig, run `jackd -d coreaudio` on the Mac with `jack_load netmanager`, Pi as netJACK2 slave. Run a sine generator on the Pi side, capture an hour into a Mac DAW, look for clicks / phase discontinuities. **The whole "no SRC needed" claim rides on this.** If it clicks, fall back to a SRC-in-daemon Phase 2 (adds ~5 days).
-
-**Pass criteria:** zero clicks in 1 hour of capture. RMS-level continuity across the run.
+### Spike B — confirm Config B clock stability — **PARTIAL (30s smoke clean, 1hr deferred)**
+30s smoke at 48k/1024-period clean once Mac jackd is at `-P 75` (default `-P 10` underflows constantly). Mac was on Wi-Fi, so the formal 1hr capture is deferred until wired-Ethernet is in place. See [docs/spike-b-clock-stability.md](docs/spike-b-clock-stability.md). Phase 1.5 must enforce `-P 75`.
 
 ---
 
@@ -28,14 +24,8 @@ On a real Pi + Mac + Ethernet rig, run `jackd -d coreaudio` on the Mac with `jac
 
 **Goal:** universal binary, signed, notarized, loads on Sequoia/Tahoe Apple Silicon. Existing (buggy) sync code unchanged. End-to-end audio passes, even if it eventually drifts.
 
-### 1.1 Xcode project modernization (1 day)
-- `driver/JackBridgePlugIn.xcodeproj/project.pbxproj`:
-  - `ARCHS = arm64 x86_64`
-  - `MACOSX_DEPLOYMENT_TARGET = 13.0`
-  - `ONLY_ACTIVE_ARCH = NO` for Release
-  - Modern Clang/C++17
-- Audit `driver/JackBridge/PublicUtility/` — drop headers that overlap with current public SDK, keep `CAException`/`CADebugMacros`/`CAMutex` if still needed.
-- Build a universal `.driver` bundle.
+### 1.1 Xcode project modernization — **DONE**
+Universal `.driver` (arm64 + x86_64) builds clean under Xcode 26.3 / SDK 26.2 with `MACOSX_DEPLOYMENT_TARGET=13.0`, `CLANG_CXX_LANGUAGE_STANDARD=c++17`, `ALWAYS_SEARCH_USER_PATHS=NO`, `ONLY_ACTIVE_ARCH=NO` for Release. PublicUtility headers all compile clean against the current SDK — no overlap conflicts to resolve; pruning unused headers (CAVolumeCurve, CAGuard, CAHostTimeBase) folds into Phase 3 dead-code deletion. Only outstanding warnings are 6 pre-existing sign-compare instances in `SA_Device.cpp`. Smoke-loading the built `.driver` is Phase 1.6.
 
 ### 1.2 Daemon Xcode target (1 day)
 - Delete `daemon/build.sh`. Add a CLI tool target inside the Xcode workspace.
@@ -134,11 +124,8 @@ On a real Pi + Mac + Ethernet rig, run `jackd -d coreaudio` on the Mac with `jac
 - `/Library/Application Support/JackBridge/config.plist` for: jackd buffer size, sample rate (still 48k only), aggregate UID override, log level.
 - Env-var overrides for debugging (`JACKBRIDGE_DEBUG`, `JACKBRIDGE_BUFFER`).
 
-### 3.5 Delete dead code (¼ day)
-- Remove `libs/` entirely.
-- Remove `driver/ReadMe.txt` (Apple sample leftover).
-- Update `tools/rmshm.c` to target `/JackBridge` (or delete — Phase 2 made it obsolete).
-- Update README.md to reflect that there is no `JackBridge` branch.
+### 3.5 Delete dead code — **mostly DONE during Phase 1.1 sweep**
+`libs/`, `driver/ReadMe.txt`, and the unused PublicUtility files (`CADebugger`, `CAGuard`, `CAVolumeCurve`) all deleted. README's `JackBridge` branch reference fixed. Remaining: update or delete `tools/rmshm.c` (still targets `/jackrouter`) — Phase 2's lifecycle fix likely makes it obsolete.
 
 ### 3.6 Notarized installer pipeline in CI (1 day)
 - GitHub Actions workflow: build → sign → notarize → staple → release.
