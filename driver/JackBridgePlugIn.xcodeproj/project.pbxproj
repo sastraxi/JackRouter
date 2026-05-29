@@ -8,8 +8,6 @@
 
 /* Begin PBXBuildFile section */
 		2D47CAA415FEC82B002AAFB5 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = 2D47CAA215FEC82B002AAFB5 /* Localizable.strings */; };
-		2D4DE41415EDF8D500E96F0D /* CAVolumeCurve.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2D4DE41215EDF8D500E96F0D /* CAVolumeCurve.cpp */; };
-		2D4DE41515EDF8D500E96F0D /* CAVolumeCurve.h in Headers */ = {isa = PBXBuildFile; fileRef = 2D4DE41315EDF8D500E96F0D /* CAVolumeCurve.h */; };
 		2D76D96115E48B2000FF0F33 /* CoreFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 2D7477AC1578168D00412279 /* CoreFoundation.framework */; };
 		2D76D97615E48B6400FF0F33 /* SA_PlugIn.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2D76D97415E48B6400FF0F33 /* SA_PlugIn.cpp */; };
 		2D76D97715E48B6400FF0F33 /* SA_PlugIn.h in Headers */ = {isa = PBXBuildFile; fileRef = 2D76D97515E48B6400FF0F33 /* SA_PlugIn.h */; };
@@ -23,15 +21,11 @@
 		2DD7AA2815EAFD5100C67AE1 /* CACFNumber.h in Headers */ = {isa = PBXBuildFile; fileRef = 2DD7AA1315EAFD3300C67AE1 /* CACFNumber.h */; };
 		2DD7AA2915EAFD5100C67AE1 /* CACFString.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2DD7AA1415EAFD3300C67AE1 /* CACFString.cpp */; };
 		2DD7AA2A15EAFD5100C67AE1 /* CACFString.h in Headers */ = {isa = PBXBuildFile; fileRef = 2DD7AA1515EAFD3300C67AE1 /* CACFString.h */; };
-		2DD7AA2B15EAFD5100C67AE1 /* CADebugger.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2DD7AA1615EAFD3300C67AE1 /* CADebugger.cpp */; };
-		2DD7AA2C15EAFD5100C67AE1 /* CADebugger.h in Headers */ = {isa = PBXBuildFile; fileRef = 2DD7AA1715EAFD3300C67AE1 /* CADebugger.h */; };
 		2DD7AA2D15EAFD5100C67AE1 /* CADebugMacros.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2DD7AA1815EAFD3300C67AE1 /* CADebugMacros.cpp */; };
 		2DD7AA2E15EAFD5100C67AE1 /* CADebugMacros.h in Headers */ = {isa = PBXBuildFile; fileRef = 2DD7AA1915EAFD3300C67AE1 /* CADebugMacros.h */; };
 		2DD7AA2F15EAFD5100C67AE1 /* CADebugPrintf.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2DD7AA1A15EAFD3300C67AE1 /* CADebugPrintf.cpp */; };
 		2DD7AA3015EAFD5100C67AE1 /* CADebugPrintf.h in Headers */ = {isa = PBXBuildFile; fileRef = 2DD7AA1B15EAFD3300C67AE1 /* CADebugPrintf.h */; };
 		2DD7AA3115EAFD5100C67AE1 /* CAException.h in Headers */ = {isa = PBXBuildFile; fileRef = 2DD7AA1C15EAFD3300C67AE1 /* CAException.h */; };
-		2DD7AA3215EAFD5100C67AE1 /* CAGuard.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2DD7AA1D15EAFD3300C67AE1 /* CAGuard.cpp */; };
-		2DD7AA3315EAFD5100C67AE1 /* CAGuard.h in Headers */ = {isa = PBXBuildFile; fileRef = 2DD7AA1E15EAFD3300C67AE1 /* CAGuard.h */; };
 		2DD7AA3415EAFD5100C67AE1 /* CAHostTimeBase.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2DD7AA1F15EAFD3300C67AE1 /* CAHostTimeBase.cpp */; };
 		2DD7AA3515EAFD5100C67AE1 /* CAHostTimeBase.h in Headers */ = {isa = PBXBuildFile; fileRef = 2DD7AA2015EAFD3300C67AE1 /* CAHostTimeBase.h */; };
 		2DD7AA3615EAFD5100C67AE1 /* CAMutex.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 2DD7AA2115EAFD3300C67AE1 /* CAMutex.cpp */; };
@@ -46,8 +40,6 @@
 
 /* Begin PBXFileReference section */
 		2D47CAA315FEC82B002AAFB5 /* English */ = {isa = PBXFileReference; fileEncoding = 10; lastKnownFileType = text.plist.strings; name = English; path = English.lproj/Localizable.strings; sourceTree = "<group>"; };
-		2D4DE41215EDF8D500E96F0D /* CAVolumeCurve.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = CAVolumeCurve.cpp; sourceTree = "<group>"; };
-		2D4DE41315EDF8D500E96F0D /* CAVolumeCurve.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = CAVolumeCurve.h; sourceTree = "<group>"; };
 		2D7477AC1578168D00412279 /* CoreFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreFoundation.framework; path = System/Library/Frameworks/CoreFoundation.framework; sourceTree = SDKROOT; };
 		2D7477EC157823CF00412279 /* CoreAudio.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreAudio.framework; path = System/Library/Frameworks/CoreAudio.framework; sourceTree = SDKROOT; };
 		2D76D96015E48B2000FF0F33 /* JackBridgePlugIn.driver */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = JackBridgePlugIn.driver; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -65,15 +57,11 @@
 		2DD7AA1315EAFD3300C67AE1 /* CACFNumber.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CACFNumber.h; sourceTree = "<group>"; };
 		2DD7AA1415EAFD3300C67AE1 /* CACFString.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = CACFString.cpp; sourceTree = "<group>"; };
 		2DD7AA1515EAFD3300C67AE1 /* CACFString.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CACFString.h; sourceTree = "<group>"; };
-		2DD7AA1615EAFD3300C67AE1 /* CADebugger.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = CADebugger.cpp; sourceTree = "<group>"; };
-		2DD7AA1715EAFD3300C67AE1 /* CADebugger.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CADebugger.h; sourceTree = "<group>"; };
 		2DD7AA1815EAFD3300C67AE1 /* CADebugMacros.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = CADebugMacros.cpp; sourceTree = "<group>"; };
 		2DD7AA1915EAFD3300C67AE1 /* CADebugMacros.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CADebugMacros.h; sourceTree = "<group>"; };
 		2DD7AA1A15EAFD3300C67AE1 /* CADebugPrintf.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = CADebugPrintf.cpp; sourceTree = "<group>"; };
 		2DD7AA1B15EAFD3300C67AE1 /* CADebugPrintf.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CADebugPrintf.h; sourceTree = "<group>"; };
 		2DD7AA1C15EAFD3300C67AE1 /* CAException.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CAException.h; sourceTree = "<group>"; };
-		2DD7AA1D15EAFD3300C67AE1 /* CAGuard.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = CAGuard.cpp; sourceTree = "<group>"; };
-		2DD7AA1E15EAFD3300C67AE1 /* CAGuard.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CAGuard.h; sourceTree = "<group>"; };
 		2DD7AA1F15EAFD3300C67AE1 /* CAHostTimeBase.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = CAHostTimeBase.cpp; sourceTree = "<group>"; };
 		2DD7AA2015EAFD3300C67AE1 /* CAHostTimeBase.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CAHostTimeBase.h; sourceTree = "<group>"; };
 		2DD7AA2115EAFD3300C67AE1 /* CAMutex.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = CAMutex.cpp; sourceTree = "<group>"; };
@@ -146,8 +134,6 @@
 				2DD7AA7F15EC3DB800C67AE1 /* CACFObject.h */,
 				2DD7AA1415EAFD3300C67AE1 /* CACFString.cpp */,
 				2DD7AA1515EAFD3300C67AE1 /* CACFString.h */,
-				2DD7AA1615EAFD3300C67AE1 /* CADebugger.cpp */,
-				2DD7AA1715EAFD3300C67AE1 /* CADebugger.h */,
 				2DD7AA1815EAFD3300C67AE1 /* CADebugMacros.cpp */,
 				2DD7AA1915EAFD3300C67AE1 /* CADebugMacros.h */,
 				2DD7AA1A15EAFD3300C67AE1 /* CADebugPrintf.cpp */,
@@ -155,14 +141,10 @@
 				2DD7AA7B15EC20FD00C67AE1 /* CADispatchQueue.cpp */,
 				2DD7AA7C15EC20FD00C67AE1 /* CADispatchQueue.h */,
 				2DD7AA1C15EAFD3300C67AE1 /* CAException.h */,
-				2DD7AA1D15EAFD3300C67AE1 /* CAGuard.cpp */,
-				2DD7AA1E15EAFD3300C67AE1 /* CAGuard.h */,
 				2DD7AA1F15EAFD3300C67AE1 /* CAHostTimeBase.cpp */,
 				2DD7AA2015EAFD3300C67AE1 /* CAHostTimeBase.h */,
 				2DD7AA2115EAFD3300C67AE1 /* CAMutex.cpp */,
 				2DD7AA2215EAFD3300C67AE1 /* CAMutex.h */,
-				2D4DE41215EDF8D500E96F0D /* CAVolumeCurve.cpp */,
-				2D4DE41315EDF8D500E96F0D /* CAVolumeCurve.h */,
 			);
 			path = PublicUtility;
 			sourceTree = "<group>";
@@ -204,18 +186,15 @@
 				2DD7AA2615EAFD5100C67AE1 /* CACFDictionary.h in Headers */,
 				2DD7AA2815EAFD5100C67AE1 /* CACFNumber.h in Headers */,
 				2DD7AA2A15EAFD5100C67AE1 /* CACFString.h in Headers */,
-				2DD7AA2C15EAFD5100C67AE1 /* CADebugger.h in Headers */,
 				2DD7AA2E15EAFD5100C67AE1 /* CADebugMacros.h in Headers */,
 				2DD7AA3015EAFD5100C67AE1 /* CADebugPrintf.h in Headers */,
 				2DD7AA3115EAFD5100C67AE1 /* CAException.h in Headers */,
-				2DD7AA3315EAFD5100C67AE1 /* CAGuard.h in Headers */,
 				2DD7AA3515EAFD5100C67AE1 /* CAHostTimeBase.h in Headers */,
 				8D2201902074FC650060D7BA /* JackBridge.h in Headers */,
 				2DD7AA3715EAFD5100C67AE1 /* CAMutex.h in Headers */,
 				2DD7AA7E15EC20FD00C67AE1 /* CADispatchQueue.h in Headers */,
 				2DD7AA8015EC3DB800C67AE1 /* CACFObject.h in Headers */,
 				2DD7AA9815EC551600C67AE1 /* SA_Device.h in Headers */,
-				2D4DE41515EDF8D500E96F0D /* CAVolumeCurve.h in Headers */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -288,15 +267,12 @@
 				2DD7AA2515EAFD5100C67AE1 /* CACFDictionary.cpp in Sources */,
 				2DD7AA2715EAFD5100C67AE1 /* CACFNumber.cpp in Sources */,
 				2DD7AA2915EAFD5100C67AE1 /* CACFString.cpp in Sources */,
-				2DD7AA2B15EAFD5100C67AE1 /* CADebugger.cpp in Sources */,
 				2DD7AA2D15EAFD5100C67AE1 /* CADebugMacros.cpp in Sources */,
 				2DD7AA2F15EAFD5100C67AE1 /* CADebugPrintf.cpp in Sources */,
-				2DD7AA3215EAFD5100C67AE1 /* CAGuard.cpp in Sources */,
 				2DD7AA3415EAFD5100C67AE1 /* CAHostTimeBase.cpp in Sources */,
 				2DD7AA3615EAFD5100C67AE1 /* CAMutex.cpp in Sources */,
 				2DD7AA7D15EC20FD00C67AE1 /* CADispatchQueue.cpp in Sources */,
 				2DD7AA9715EC551600C67AE1 /* SA_Device.cpp in Sources */,
-				2D4DE41415EDF8D500E96F0D /* CAVolumeCurve.cpp in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -317,8 +293,10 @@
 		2D7477A21578162B00412279 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ARCHS = "$(ARCHS_STANDARD_64_BIT)";
-				CLANG_CXX_LANGUAGE_STANDARD = "c++0x";
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = "arm64 x86_64";
+				CLANG_CXX_LANGUAGE_STANDARD = "c++17";
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
 				CLANG_CXX_LIBRARY = "libc++";
 				CLANG_WARN_CONSTANT_CONVERSION = YES;
 				CLANG_WARN_EMPTY_BODY = YES;
@@ -346,6 +324,7 @@
 				GCC_WARN_UNUSED_PARAMETER = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				"INSTALL_PATH[sdk=macosx*]" = "$(LOCAL_LIBRARY_DIR)/Audio/Plug-Ins/HAL";
+				ONLY_ACTIVE_ARCH = NO;
 				SDKROOT = macosx;
 			};
 			name = Release;
@@ -353,8 +332,10 @@
 		2D7477A31578162B00412279 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ARCHS = "$(ARCHS_STANDARD_64_BIT)";
-				CLANG_CXX_LANGUAGE_STANDARD = "c++0x";
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = "arm64 x86_64";
+				CLANG_CXX_LANGUAGE_STANDARD = "c++17";
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
 				CLANG_CXX_LIBRARY = "libc++";
 				CLANG_WARN_CONSTANT_CONVERSION = YES;
 				CLANG_WARN_EMPTY_BODY = YES;
@@ -388,8 +369,10 @@
 		2D7477A41578164E00412279 /* Debug-Opt */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ARCHS = "$(ARCHS_STANDARD_64_BIT)";
-				CLANG_CXX_LANGUAGE_STANDARD = "c++0x";
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ARCHS = "arm64 x86_64";
+				CLANG_CXX_LANGUAGE_STANDARD = "c++17";
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
 				CLANG_CXX_LIBRARY = "libc++";
 				CLANG_WARN_CONSTANT_CONVERSION = YES;
 				CLANG_WARN_EMPTY_BODY = YES;
