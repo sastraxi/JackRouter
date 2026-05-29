@@ -548,7 +548,7 @@ void	SA_Device::Device_GetPropertyData(AudioObjectID inObjectID, pid_t inClientP
 					}
 					
 					//	fill out the list with as many objects as requested, which is everything
-                    for (int i=0; i<theNumberItemsToFetch; i++)
+                    for (UInt32 i=0; i<theNumberItemsToFetch; i++)
                     {
 					    if(i < kNumberOfInputSubObjects)
                         {
@@ -569,7 +569,7 @@ void	SA_Device::Device_GetPropertyData(AudioObjectID inObjectID, pid_t inClientP
 					}
 					
 					//	fill out the list with the right objects
-                    for (int i=0; i<theNumberItemsToFetch; i++)
+                    for (UInt32 i=0; i<theNumberItemsToFetch; i++)
                     {
 					    if(i < kNumberOfInputSubObjects)
                         {
@@ -586,7 +586,7 @@ void	SA_Device::Device_GetPropertyData(AudioObjectID inObjectID, pid_t inClientP
 					}
 					
 					//	fill out the list with the right objects
-                    for (int i=0; i<theNumberItemsToFetch; i++)
+                    for (UInt32 i=0; i<theNumberItemsToFetch; i++)
                     {
 					    if(i < kNumberOfOutputSubObjects)
                         {
@@ -737,7 +737,7 @@ void	SA_Device::Device_GetPropertyData(AudioObjectID inObjectID, pid_t inClientP
 					}
 					
 					//	fill out the list with as many objects as requested
-                    for (int i=0; i<theNumberItemsToFetch; i++)
+                    for (UInt32 i=0; i<theNumberItemsToFetch; i++)
                     {
 					    if(i < kNumberOfInputStreams)
                         {
@@ -758,7 +758,7 @@ void	SA_Device::Device_GetPropertyData(AudioObjectID inObjectID, pid_t inClientP
 					}
 					
 					//	fill out the list with as many objects as requested
-                    for (int i=0; i<theNumberItemsToFetch; i++)
+                    for (UInt32 i=0; i<theNumberItemsToFetch; i++)
                     {
 					    if(i < kNumberOfInputStreams)
                         {
@@ -775,7 +775,7 @@ void	SA_Device::Device_GetPropertyData(AudioObjectID inObjectID, pid_t inClientP
 					}
 					
 					//	fill out the list with as many objects as requested
-                    for (int i=0; i<theNumberItemsToFetch; i++)
+                    for (UInt32 i=0; i<theNumberItemsToFetch; i++)
                     {
 					    if(i < kNumberOfOutputStreams)
                         {
