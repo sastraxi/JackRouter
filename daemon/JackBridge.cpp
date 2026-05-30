@@ -31,6 +31,7 @@ SOFTWARE.
 #include <sstream>
 #include <cstdlib>
 #include <csignal>
+#include <cstring>
 #include <pthread.h>
 #include "jackClient.hpp"
 #include "JackBridge.h"
@@ -61,6 +62,8 @@ public:
                 JACKBRIDGE_PROTOCOL_VERSION);
             exit(1);
         }
+
+        check_jack_backend();
 
         isActive = false;
         isSyncMode = true; // FIXME: should be parameterized
@@ -94,6 +97,57 @@ public:
 #ifdef _WITH_MIDI_BRIDGE_
         release_midi_ports();
 #endif // _WITH_MIDI_BRIDGE_
+    }
+
+    // Refuse to start if jackd's backend is anything other than CoreAudio,
+    // or if jackd's CoreAudio backend is pointed at JackBridge itself
+    // (clock-device feedback loop).
+    void check_jack_backend() {
+        jack_port_t* port = jack_port_by_name(client, "system:playback_1");
+        if (!port) {
+            JB_LOG_ERR(jb_log_jack(),
+                "no system:playback_1 port — jackd has no backend or backend has no playback. "
+                "JackBridge requires a CoreAudio backend (-d coreaudio). See docs/macos-setup.md.");
+            exit(1);
+        }
+
+        size_t alias_size = jack_port_name_size();
+        char* alias_storage[2] = {
+            (char*)calloc(1, alias_size),
+            (char*)calloc(1, alias_size),
+        };
+        int n = jack_port_get_aliases(port, alias_storage);
+
+        if (n <= 0) {
+            JB_LOG_ERR(jb_log_jack(),
+                "system:playback_1 has no aliases — jackd backend is likely 'net' or a "
+                "non-CoreAudio driver. Required: coreaudio. See docs/macos-setup.md.");
+            free(alias_storage[0]);
+            free(alias_storage[1]);
+            exit(1);
+        }
+
+        // Feedback-loop check: if jackd's clock device is JackBridge itself
+        // (directly or via an aggregate whose name contains "JackBridge"),
+        // CoreAudio doesn't detect the cycle — output is silence or runaway.
+        // The HAL device's display name is "JackBridge" (see Localizable.strings).
+        for (int i = 0; i < n; i++) {
+            if (strstr(alias_storage[i], "JackBridge") != NULL) {
+                JB_LOG_ERR(jb_log_jack(),
+                    "jackd is clocked off JackBridge itself (alias=%{public}s). "
+                    "This creates a CoreAudio feedback loop. Set ClockDeviceUID in "
+                    "/Library/Application Support/JackBridge/config.plist to a different "
+                    "device (e.g. built-in output). See docs/idiosyncrasies.md.",
+                    alias_storage[i]);
+                free(alias_storage[0]);
+                free(alias_storage[1]);
+                exit(1);
+            }
+        }
+
+        JB_LOG_INFO(jb_log_jack(), "backend check OK (alias=%{public}s)", alias_storage[0]);
+        free(alias_storage[0]);
+        free(alias_storage[1]);
     }
 
     int process_callback(jack_nframes_t nframes) override {

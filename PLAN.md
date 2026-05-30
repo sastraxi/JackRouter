@@ -72,13 +72,15 @@ New shm fields at offsets 0x130 (`shmProtocolVersion`) and 0x138 (`shmDaemonAliv
 ### 2.4 `jack_on_shutdown` + signal handling — **DONE**
 `JackClient` grew a virtual `on_shutdown()` hook + a `jack_on_shutdown(client, _on_shutdown, this)` registration in `activate()` (replacing the long-standing commented-out line at `jackClient.cpp:132`). `JackBridge::on_shutdown` zeros `shmDaemonAlive` and stamps `shmDriverStatus = INIT` so the HAL watchdog flips DeviceIsAlive immediately rather than waiting out the 5-cycle threshold, then `kill(getpid(), SIGTERM)` to wake `main()`. `main()` now does `pthread_sigmask(SIG_BLOCK, {SIGINT, SIGTERM})` before `activate()` so JACK's threads inherit the mask and the on_shutdown self-raise is steered to the main-thread `sigwait()` — that returns, we `delete jackBridge[0]` (which calls `jack_client_close`), and exit 0. We intentionally do NOT `shm_unlink` on the way out: the HAL is the shm owner, so unlinking would force a recreate cycle on next reconnect; the heartbeat-zeroing is the in-band liveness signal. LaunchAgent `KeepAlive` (1.5) restarts us when jackd is back. `tools/rmshm.c` is still the manual escape hatch — Phase 3.5 calls out updating it.
 
-### 2.5 `jackd` backend sanity check (½ day)
-- On daemon startup, query the jackd we connected to: confirm it's running on a CoreAudio backend (not `net`). If not, refuse to start with a clear error referencing `docs/macos-setup.md`.
-- Implementation: `jack_get_driver_name()` or equivalent; if it's `net`, log and exit non-zero.
+### 2.5 + 2.6 jackd backend + feedback-loop check — **DONE**
+Combined into a single `JackBridge::check_jack_backend()` call from the ctor, after the protocol-version check. JACK's public API doesn't expose the backend driver name, so we read `jack_port_get_aliases` on `system:playback_1`: JACK2's CoreAudio backend stamps aliases derived from the underlying CoreAudio device's friendly name; the net backend leaves them empty. Two checks, one pass:
+- No `system:playback_1` *or* zero aliases → backend isn't `coreaudio`. Refuse with a `docs/macos-setup.md` pointer.
+- Alias contains `"JackBridge"` (the HAL device's display name from `Localizable.strings`) → jackd is clocked off ourselves, directly or via an aggregate whose name includes "JackBridge". Refuse with a `config.plist` / `docs/idiosyncrasies.md` pointer.
+Failures log via `os_log` (subsystem `com.jackbridge`, category `jack`) and `exit(1)`. `KeepAlive=true` means launchd respawns on its 10s throttle; `WatchPaths` on `config.plist` triggers immediate restart when the user saves a fix. Instant exit was a deliberate choice over a `sleep(60)` throttle — the latter complicates the WatchPaths recovery path and the 10s throttle is fine.
 
-### 2.6 Clock-device feedback-loop check (½ day)
-- On daemon startup, look up jackd's CoreAudio backend device. If its UID equals JackBridge's own device UID (user pointed `ClockDeviceUID` at us, directly or via an aggregate that includes us), refuse to start. Loud log.
-- For aggregates: enumerate `kAudioAggregateDevicePropertyActiveSubDeviceList` and reject if JackBridge appears as a sub-device.
+The aggregate sub-device enumeration originally planned for 2.6 (via `kAudioAggregateDevicePropertyActiveSubDeviceList`) is skipped: the alias check catches the common case (aggregate named "JackBridge Clock" or similar), and chasing the corner case (user-built aggregate with arbitrary name that includes our HAL as a sub-device) would require pulling CoreAudio into the daemon for marginal benefit. `docs/idiosyncrasies.md` keeps the user-facing warning.
+
+### 2.6 — folded into 2.5 (see above)
 
 ### 2.7 Loud failure on `jack_client_open` — **PARTIAL (silent-return fixed; broader audit deferred)**
 `JackClient` ctor now logs the jackd status word + a pointer to `docs/macos-setup.md` and `exit(1)` instead of returning with `client == nullptr` and letting the next jack_* call segfault. The broader return-code audit across CoreAudio / JACK calls is still owed — folded into 2.5/2.6 for the jackd-side checks and otherwise into Phase 3 polish.
@@ -148,6 +150,12 @@ Required secrets are documented at the top of `release.yml`. The `/usr/local` sh
 - Rewrite README.md targeting end users + downstream pi-stomp integrators.
 - Quick-start: install `.pkg`, install JACK2, plug Ethernet to Pi, open DAW, pick JackBridge.
 - Link into `docs/` for everything else.
+
+### 3.9 Uninstall path (½ day)
+- `jackbridge-ctl uninstall` subcommand: `bootout` both agents in the active GUI session; `rm` the LaunchAgents, HAL bundle, support dir, and `/usr/local/bin/jackbridge-ctl` symlink; invoke `tools/rmshm` to unlink the POSIX shm region; `killall coreaudiod`; `pkgutil --forget com.jackbridge.pkg`; clear `launchctl disable` state for both labels.
+- Ship a double-clickable `Uninstall.command` inside the `.pkg` payload (or alongside the README) that wraps the same logic with `sudo` prompting via `osascript` — most users won't dig out the CLI.
+- Document the manual fallback in `docs/macos-setup.md` (the nine-step `sudo rm -rf …` sequence we drafted in conversation, for users who need to debug a half-installed state).
+- Multi-user case: only the invoking user's GUI session gets `bootout`'d. Other logged-in users keep their agents until logout. Acceptable; documenting.
 
 **Phase 3 done when:** a user with no prior knowledge can install the `.pkg`, plug in a Pi, and have audio in their DAW within 5 minutes.
 

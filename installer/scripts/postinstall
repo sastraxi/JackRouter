@@ -12,6 +12,12 @@ set -e
 
 /usr/bin/killall coreaudiod 2>/dev/null || true
 
+# Expose jackbridge-ctl on $PATH. /usr/local/bin exists by default on macOS;
+# `ln -sf` overwrites any prior symlink (e.g. an upgrade reinstall) without
+# touching an unrelated file with the same name.
+/bin/mkdir -p /usr/local/bin
+/bin/ln -sf "/Library/Application Support/JackBridge/jackbridge-ctl" /usr/local/bin/jackbridge-ctl
+
 loggedInUser=$(/usr/bin/stat -f%Su /dev/console)
 if [ -n "$loggedInUser" ] && [ "$loggedInUser" != "root" ]; then
     loggedInUID=$(/usr/bin/id -u "$loggedInUser")

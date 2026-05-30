@@ -73,6 +73,45 @@ Caveats:
 - Stereo only. Multichannel system audio is summed/dropped.
 - 48 kHz only. CoreAudio resamples app-side transparently.
 
+## Turning JackBridge on and off
+
+The `jackbridge-ctl` wrapper (installed alongside the daemon) handles both LaunchAgents together. Stopping only one leaves either the audio device orphaned or the daemon crash-looping, so always move them as a pair.
+
+```bash
+jackbridge-ctl start     # enable + bootstrap both agents into this GUI session
+jackbridge-ctl stop      # bootout + disable both (persists across reboots)
+jackbridge-ctl restart   # stop + start
+jackbridge-ctl status    # per-agent state
+jackbridge-ctl logs      # tail -F the agent stdout/stderr logs in /tmp
+```
+
+`stop` writes to launchd's disabled-state database (`/var/db/com.apple.xpc.launchd/disabled.<uid>.plist`), so the agents stay off across reboots and login cycles until `jackbridge-ctl start` re-enables them. No `sudo` required — agents run in the user's GUI session.
+
+Raw `launchctl` equivalent (for reference / scripting):
+```bash
+launchctl disable gui/$(id -u)/com.jackbridge.daemon
+launchctl disable gui/$(id -u)/com.jackbridge.jackd
+launchctl bootout  gui/$(id -u)/com.jackbridge.daemon
+launchctl bootout  gui/$(id -u)/com.jackbridge.jackd
+# … and the inverse with `enable` + `bootstrap`.
+```
+
+### What happens if the daemon refuses to start?
+
+The daemon validates jackd's CoreAudio backend on startup (§2.5 + §2.6 in `PLAN.md`):
+- No `system:playback_1` port, or no aliases on it → jackd's backend isn't `coreaudio`. Refuse.
+- Alias contains `"JackBridge"` → jackd is clocked off JackBridge itself, which creates a CoreAudio feedback loop. Refuse.
+
+On either failure the daemon logs to `com.jackbridge` / category `jack` via `os_log` and exits non-zero. `KeepAlive=true` means launchd respawns after its built-in 10s throttle — the daemon will loop until you fix the cause. Watch the loop with:
+
+```bash
+log stream --predicate 'subsystem == "com.jackbridge" && category == "jack"'
+# or:
+jackbridge-ctl logs
+```
+
+Typical fix: edit `/Library/Application Support/JackBridge/config.plist` to set a sane `ClockDeviceUID` (the daemon's `WatchPaths` triggers an immediate restart when you save). If you genuinely need to stop the loop without fixing config, `jackbridge-ctl stop`.
+
 ## Codesigning + notarization
 
 | Artifact | Signature | Hardened runtime | Entitlements | Notarized |
