@@ -8,6 +8,15 @@ connection graph scope. Therefore, I changed the name from "Router" to "Bridge".
 
 NOTE: This is still experimental prototype implementation. Please be careful using it.
 
+## Architecture
+
+JackBridge consists of both a driver and a daemon, as we must connect to JACK from userland. They communicate via ringbuffers in a POSIX shared-memory region (`/JackBridge`).
+
+- **Driver** — an `AudioServerPlugIn` HAL bundle loaded into `coreaudiod`. This is what makes JackBridge appear as a selectable audio device in DAWs. Its IO proc memcpys between the DAW's audio buffers and the shm rings.
+- **Daemon** — a userland JACK client. Its process callback memcpys between the JACK graph and the shm rings.
+
+Both sides run in the same CoreAudio host-clock domain, so no sample-rate conversion happens inside JackBridge. Clock-domain crossing (e.g. to a networked Pi) is netJACK2's job.
+
 ## Changes
 - Master clock synchronization with Jack server
 
