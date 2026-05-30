@@ -1371,8 +1371,8 @@ void	SA_Device::GetZeroTimeStamp(Float64& outSampleTime, UInt64& outHostTime, UI
         UInt64 threshold = (UInt64)(5.0 * theHostTicksPerRingBuffer);
         if (now - mLastDaemonAliveHostTime > threshold) {
             mDeviceIsAlive.store(false, std::memory_order_release);
-            syslog(LOG_ERR,
-                "JackBridge: daemon heartbeat stalled >%llu host ticks — flipping DeviceIsAlive=0",
+            JB_LOG_ERR(jb_log_driver(),
+                "daemon heartbeat stalled >%llu host ticks — flipping DeviceIsAlive=0",
                 (unsigned long long)threshold);
             AudioObjectPropertyAddress addr = {
                 kAudioDevicePropertyDeviceIsAlive,
@@ -1549,9 +1549,8 @@ void	SA_Device::_HW_Open()
     }
 
     if (!check_protocol_version()) {
-        syslog(LOG_ERR,
-            "JackBridge: shm protocol version mismatch — observed %llu, driver built for %d. "
-            "Reinstall the matching .pkg.",
+        JB_LOG_ERR(jb_log_shm(),
+            "protocol version mismatch — observed %llu, driver built for %d. Reinstall the matching .pkg.",
             (unsigned long long)shmProtocolVersion->load(std::memory_order_acquire),
             JACKBRIDGE_PROTOCOL_VERSION);
         Throw(CAException(kAudioHardwareBadDeviceError));
@@ -1564,7 +1563,7 @@ void	SA_Device::_HW_Open()
     shmDriverStatus->store(JB_DRV_STATUS_ACTIVE, std::memory_order_release);
     mRingBufferFrameSize = STRBUFNUM / 2;
   
-    syslog(LOG_WARNING, "JackBridge: Device #%d initialized. ", instance);
+    JB_LOG_INFO(jb_log_driver(), "device #%u initialized", instance);
 }
 
 void	SA_Device::_HW_Close()
@@ -1575,7 +1574,7 @@ void	SA_Device::_HW_Close()
 
 kern_return_t	SA_Device::_HW_StartIO()
 {
-    syslog(LOG_WARNING, "JackBridge: Starting IO Device. ");
+    JB_LOG_INFO(jb_log_driver(), "StartIO");
     if (mDriverStatus == JB_DRV_STATUS_INIT) {
         return kAudioHardwareNotRunningError;
     }
@@ -1595,7 +1594,7 @@ kern_return_t	SA_Device::_HW_StartIO()
 
 void	SA_Device::_HW_StopIO()
 {
-    syslog(LOG_WARNING, "JackBridge: Stopping IO Device. ");
+    JB_LOG_INFO(jb_log_driver(), "StopIO");
     mDriverStatus = JB_DRV_STATUS_ACTIVE;
     shmDriverStatus->store(JB_DRV_STATUS_ACTIVE, std::memory_order_release);
 	return;

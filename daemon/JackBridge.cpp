@@ -30,8 +30,11 @@ SOFTWARE.
 #include <string>
 #include <sstream>
 #include <cstdlib>
+#include <csignal>
+#include <pthread.h>
 #include "jackClient.hpp"
 #include "JackBridge.h"
+#include "jb_log.hpp"
 #ifdef _WITH_MIDI_BRIDGE_
 #include <rtmidi/RtMidi.h>
 #define MAX_MIDI_PORTS 256
@@ -47,14 +50,13 @@ class JackBridge : public JackClient, public JackBridgeDriverIF {
 public:
     JackBridge(const char* name, int id, int num_Min, int num_Mout) : JackClient(name, JACK_PROCESS_CALLBACK), JackBridgeDriverIF(id) {
         if (attach_shm() < 0) {
-            fprintf(stderr, "Attaching shared memory failed (id=%d)\n", id);
+            JB_LOG_ERR(jb_log_shm(), "attach_shm failed (id=%d)", id);
             exit(1);
         }
 
         if (!check_protocol_version()) {
-            fprintf(stderr,
-                "JackBridge: shm protocol version mismatch — driver published %llu, "
-                "daemon built for %d. Reinstall the matching .pkg.\n",
+            JB_LOG_ERR(jb_log_shm(),
+                "shm protocol version mismatch — driver published %llu, daemon built for %d. Reinstall the matching .pkg.",
                 (unsigned long long)shmProtocolVersion->load(std::memory_order_acquire),
                 JACKBRIDGE_PROTOCOL_VERSION);
             exit(1);
@@ -83,10 +85,9 @@ public:
         double theHostClockFrequency = theTimeBaseInfo.denom / theTimeBaseInfo.numer;
         theHostClockFrequency *= 1000000000.0;
         HostTicksPerFrame = theHostClockFrequency / SampleRate;
-        if (isVerbose) {
-            printf("JackBridge#%d: Start with samplerate:%d Hz, buffersize:%d bytes\n",
-                instance, SampleRate, BufSize);
-        }
+        JB_LOG_INFO(jb_log_daemon(),
+            "JackBridge#%u: start with samplerate=%d Hz, buffersize=%u bytes",
+            instance, SampleRate, (unsigned)BufSize);
     }
 
     ~JackBridge() {
@@ -132,9 +133,14 @@ public:
             }
 
             isActive = true;
-            printf("JackBridge#%d: Activated with SyncMode = %s, ZeroHostTime = %llx\n",
-                instance, isSyncMode ? "Yes" : "No",
-                shmZeroHostTime->load(std::memory_order_acquire));
+            // FIXME(rt-safety): os_log on the JACK process callback path is
+            // not strictly RT-safe (may take internal locks). Fires once per
+            // activation, so the practical cost is bounded — revisit if it
+            // shows up under load.
+            JB_LOG_INFO(jb_log_jack(),
+                "JackBridge#%u: activated SyncMode=%{public}s ZeroHostTime=0x%llx",
+                instance, isSyncMode ? "yes" : "no",
+                (unsigned long long)shmZeroHostTime->load(std::memory_order_acquire));
         }
 
         if ((FrameNumber % FramesPerBuffer) == 0) {
@@ -170,8 +176,21 @@ public:
     }
 
     void setVerbose(bool flag) {
-        printf("JackBridge#%d: Verbose mode %s.\n", instance, flag ? "on" : "off");
+        JB_LOG_INFO(jb_log_daemon(),
+            "JackBridge#%u: verbose mode %{public}s", instance, flag ? "on" : "off");
         isVerbose = flag;
+    }
+
+    void on_shutdown() override {
+        // Called by jackd when it goes away (intentional stop, crash, whatever).
+        // Zero the heartbeat so the HAL's staleness watchdog flips DeviceIsAlive
+        // immediately rather than waiting for the 5-cycle threshold, then nudge
+        // main()'s sigwait so we exit cleanly. LaunchAgent KeepAlive brings us
+        // back when jackd is back.
+        shmDaemonAlive->store(0, std::memory_order_release);
+        shmDriverStatus->store(JB_DRV_STATUS_INIT, std::memory_order_release);
+        JB_LOG_DEFAULT(jb_log_jack(), "jackd shut down — exiting for LaunchAgent restart");
+        kill(getpid(), SIGTERM);
     }
 
 private:
@@ -347,7 +366,7 @@ private:
                         buf[i] = message[i];
                     }
                 } else {
-                    fprintf(stderr, "ERROR: jack_midi_event_reserve failed()\n");
+                    JB_LOG_ERR(jb_log_jack(), "jack_midi_event_reserve failed");
                 }
                 midiin[n]->getMessage(&message);
             }
@@ -394,6 +413,15 @@ main(int argc, char** argv)
     int ch, num_midiIn=-1, num_midiOut=-1;
     bool vflag=false;
 
+    // Block SIGINT/SIGTERM on every thread so they get delivered exclusively
+    // via sigwait() below. JACK threads inherit this mask, so the on_shutdown
+    // callback can raise SIGTERM and we'll catch it here for clean teardown.
+    sigset_t sigset;
+    sigemptyset(&sigset);
+    sigaddset(&sigset, SIGINT);
+    sigaddset(&sigset, SIGTERM);
+    pthread_sigmask(SIG_BLOCK, &sigset, NULL);
+
     while ((ch = getopt(argc, argv, "vi:o:")) != -1) {
         switch (ch) {
             case 'v':
@@ -431,10 +459,16 @@ main(int argc, char** argv)
     jackBridge[0]->activate();
     //jackBridge[1]->activate();
 
-    // Infinite loop until daemon is killed.
-    while(1) {
-        sleep(600);
-    }
+    // Wait for SIGINT (operator), SIGTERM (launchctl bootout / jack_on_shutdown
+    // self-raise). Either way we tear down the JACK client + drop the heartbeat
+    // so the HAL flips DeviceIsAlive=0 quickly.
+    int sig = 0;
+    sigwait(&sigset, &sig);
+    JB_LOG_DEFAULT(jb_log_daemon(), "caught signal %d, shutting down", sig);
 
+    delete jackBridge[0];
+    // Don't shm_unlink — the HAL is the shm owner; unlinking would force a
+    // recreate cycle on its side. The HAL's staleness watchdog handles our
+    // departure via the zeroed heartbeat.
     return 0;
 }

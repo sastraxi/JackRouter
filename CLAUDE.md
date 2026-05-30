@@ -51,8 +51,7 @@ Two processes, one shared-memory region (`/JackBridge`), two ring buffers (in + 
 - **POSIX shm uses `volatile` reads, no atomics, no barriers.** Daemon's own FIXMEs admit it. Works on x86 by accident; broken on Apple Silicon.
 - **Hardcoded `*2` and `8`-byte-per-frame literals** throughout assume stereo float. Don't generalize without auditing every site.
 - **No `jack_on_shutdown` handler.** If jackd dies, HAL keeps reporting STARTED and DAW gets silence forever.
-- **Daemon `main()` is `while(1) sleep(600);`** — no signal handling, no shm cleanup on exit. That's what `tools/rmshm.c` is for.
-- **`tools/rmshm.c` still unlinks the old `/jackrouter` shm name** — leftover from the previous incarnation.
+- **`tools/rmshm.c` also unlinks legacy `/jackrouter` + `/jackrouter2` names** — intentional, helps users migrating from the upstream `madhatter68/JackRouter` install.
 
 Full list with file/line citations: `docs/idiosyncrasies.md`.
 

@@ -62,6 +62,10 @@ protected:
     virtual int sync_callback(jack_transport_state_t state, jack_position_t *pos);
     virtual void timebase_callback(jack_transport_state_t state, jack_nframes_t nframes,
                                        jack_position_t *pos, int new_pos);
+    // Invoked by jackd when it disconnects (intentionally or by crash). Called
+    // on a JACK-owned thread, not the process callback — fine to log, but no
+    // jack_* calls back into the dying client. Default is a no-op.
+    virtual void on_shutdown();
 
     // Transport API
     void transport_start();
@@ -75,6 +79,7 @@ private:
     static int _sync_callback(jack_transport_state_t state, jack_position_t *pos, void *arg);
     static void _timebase_callback(jack_transport_state_t state, jack_nframes_t nframes,
                           jack_position_t *pos, int new_pos, void *arg);
+    static void _on_shutdown(void *arg);
 
 public:
     JackClient(const char* name, uint32_t cb_flags);

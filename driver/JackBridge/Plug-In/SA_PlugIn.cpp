@@ -101,7 +101,7 @@ void	SA_PlugIn::Deactivate()
 
 void	SA_PlugIn::StaticInitializer()
 {
-    syslog(LOG_WARNING, "JackBridge: intializing in StaticInitializer().");
+    JB_LOG_INFO(jb_log_driver(), "StaticInitializer");
 	try
 	{
 		sInstance = new SA_PlugIn;
@@ -255,7 +255,7 @@ void	SA_PlugIn::SetPropertyData(AudioObjectID inObjectID, pid_t inClientPID, con
 
 void    SA_PlugIn:: _CreateDevices(UInt32 numDevices)
 {
-    syslog(LOG_WARNING, "JackBridge: creating devices in _CreateDevices().");
+    JB_LOG_INFO(jb_log_driver(), "_CreateDevices");
 	//	Note that we catch all exceptions here so that we can finish processing the items in the notification
 	SA_Device* theNewDevice = NULL;
     for(UInt32 i=0; i<numDevices; i++) {

@@ -23,9 +23,11 @@ SOFTWARE.
 */
 
 #include <cstdio>
+#include <cstdlib>
 #include <jack/jack.h>
 #include <jack/midiport.h>
 #include "jackClient.hpp"
+#include "jb_log.hpp"
 
 /**********************************************************************
  private functions
@@ -58,6 +60,14 @@ void JackClient::_timebase_callback(jack_transport_state_t state, jack_nframes_t
     obj->timebase_callback(state, nframes, pos, new_pos);
 }
 
+void JackClient::on_shutdown() {
+}
+
+void JackClient::_on_shutdown(void *arg) {
+    JackClient* obj = (JackClient*)arg;
+    obj->on_shutdown();
+}
+
 /**********************************************************************
  public functions
 **********************************************************************/
@@ -66,8 +76,10 @@ JackClient::JackClient(const char* name, uint32_t flags) {
 
     client = jack_client_open(name, JackNullOption, &jst);
     if (!client) {
-        //fprintf(stderr, "jack_client_open failed with %x\n", jst);
-        return;
+        JB_LOG_ERR(jb_log_jack(),
+            "jack_client_open(\"%{public}s\") failed status=0x%x — is jackd running with the CoreAudio backend? See docs/macos-setup.md.",
+            name, (unsigned)jst);
+        exit(1);
     }
     SampleRate = jack_get_sample_rate(client);
     BufSize = jack_get_buffer_size(client);
@@ -129,16 +141,16 @@ void JackClient::activate() {
         jack_set_process_callback(client, _process_callback, this);
     }
     //jack_set_freewheel_callback(client, _freewheel_callback, arg);
-    //jack_on_shutdown(client, _on_shutdown, arg);
+    jack_on_shutdown(client, _on_shutdown, this);
 
     if (cb_flags & JACK_SYNC_CALLBACK) {
         if (jack_set_sync_callback(client, _sync_callback, this) != 0)
-             fprintf(stderr, "jack_set_sync_callback() failed\n");
+             JB_LOG_ERR(jb_log_jack(), "jack_set_sync_callback failed");
     }
 
     if (cb_flags & JACK_TIMEBASE_CALLBACK) {
         if (jack_set_timebase_callback(client, 1, _timebase_callback, this) != 0)
-             fprintf(stderr, "Unable to take over timebase.\n");
+             JB_LOG_ERR(jb_log_jack(), "jack_set_timebase_callback failed (timebase already claimed?)");
     }
 
     jack_activate(client);

@@ -69,11 +69,8 @@ The plan's recommendation of `uint32_t` for status flags was skipped: shrinking 
 ### 2.3 Heartbeat + version stamp — **DONE**
 New shm fields at offsets 0x130 (`shmProtocolVersion`) and 0x138 (`shmDaemonAlive`); `JACKBRIDGE_PROTOCOL_VERSION` bumped 2 → 3. Version handshake centralized as `JackBridgeDriverIF::check_protocol_version()` — first-attacher writes, second validates; on mismatch both sides log loudly and exit (daemon `exit(1)`, HAL throws `kAudioHardwareBadDeviceError` from `_HW_Open`). Daemon `process_callback` ticks `shmDaemonAlive` with relaxed `fetch_add`. HAL tracks last-seen counter + host time in `mLastDaemonAlive` / `mLastDaemonAliveHostTime`; `GetZeroTimeStamp` flips `mDeviceIsAlive` (std::atomic<bool>) to false once `now - lastChange > 5 * HostTicksPerRingBuffer` and fires `Host_PropertiesChanged` for `kAudioDevicePropertyDeviceIsAlive` so the DAW disconnects rather than hanging on stale-buffer silence. The property getter now reads `mDeviceIsAlive` instead of hardcoded `1`; `ReadInputData` zeroes the destination when dead. Re-arm on `_HW_StartIO` so a daemon restart recovers without unloading the device. Built clean Debug both arches; runtime soak gates on hardware in 2.8.
 
-### 2.4 `jack_on_shutdown` + signal handling (1 day)
-- Uncomment / re-implement `jack_on_shutdown` registration in `daemon/jackClient.cpp:132`.
-- On shutdown: zero `daemonAlive`, mark shm dead, unlink, exit cleanly.
-- Replace daemon `while(1) sleep(600);` with `sigwait` on SIGINT/SIGTERM. Clean teardown on signal.
-- LaunchAgent `KeepAlive` brings it back automatically.
+### 2.4 `jack_on_shutdown` + signal handling — **DONE**
+`JackClient` grew a virtual `on_shutdown()` hook + a `jack_on_shutdown(client, _on_shutdown, this)` registration in `activate()` (replacing the long-standing commented-out line at `jackClient.cpp:132`). `JackBridge::on_shutdown` zeros `shmDaemonAlive` and stamps `shmDriverStatus = INIT` so the HAL watchdog flips DeviceIsAlive immediately rather than waiting out the 5-cycle threshold, then `kill(getpid(), SIGTERM)` to wake `main()`. `main()` now does `pthread_sigmask(SIG_BLOCK, {SIGINT, SIGTERM})` before `activate()` so JACK's threads inherit the mask and the on_shutdown self-raise is steered to the main-thread `sigwait()` — that returns, we `delete jackBridge[0]` (which calls `jack_client_close`), and exit 0. We intentionally do NOT `shm_unlink` on the way out: the HAL is the shm owner, so unlinking would force a recreate cycle on next reconnect; the heartbeat-zeroing is the in-band liveness signal. LaunchAgent `KeepAlive` (1.5) restarts us when jackd is back. `tools/rmshm.c` is still the manual escape hatch — Phase 3.5 calls out updating it.
 
 ### 2.5 `jackd` backend sanity check (½ day)
 - On daemon startup, query the jackd we connected to: confirm it's running on a CoreAudio backend (not `net`). If not, refuse to start with a clear error referencing `docs/macos-setup.md`.
@@ -83,9 +80,8 @@ New shm fields at offsets 0x130 (`shmProtocolVersion`) and 0x138 (`shmDaemonAliv
 - Enumerate the aggregate jackd is bound to via `kAudioAggregateDevicePropertyActiveSubDeviceList`.
 - If JackBridge's own UID is in the list, refuse to start. User has misconfigured. Loud log.
 
-### 2.7 Loud failure on `jack_client_open` (½ day)
-- Fix `daemon/jackClient.cpp:70` silent-return-on-failure. Log + exit non-zero.
-- Audit all CoreAudio / JACK return codes — currently many are unchecked.
+### 2.7 Loud failure on `jack_client_open` — **PARTIAL (silent-return fixed; broader audit deferred)**
+`JackClient` ctor now logs the jackd status word + a pointer to `docs/macos-setup.md` and `exit(1)` instead of returning with `client == nullptr` and letting the next jack_* call segfault. The broader return-code audit across CoreAudio / JACK calls is still owed — folded into 2.5/2.6 for the jackd-side checks and otherwise into Phase 3 polish.
 
 ### 2.8 Soak test (1 day)
 - 24-hour continuous run on real hardware (Pi → Mac, music playing through DAW). Zero clicks, zero hangs.
@@ -107,17 +103,15 @@ New shm fields at offsets 0x130 (`shmProtocolVersion`) and 0x138 (`shmDaemonAliv
 
 ### 3.2 Meaningful channel labels (¼ day) -- *SKIPPED*
 
-### 3.3 Logging via `os_log` (½ day)
-- Replace `printf`/`stderr` in daemon with `os_log` under subsystem `com.jackbridge`, categories `daemon`, `shm`, `jack`.
-- HAL plugin uses `os_log` already (Apple convention). Confirm subsystem.
-- Visible in Console.app and `log show --predicate 'subsystem == "com.jackbridge"'`.
+### 3.3 Logging via `os_log` — **DONE**
+New `shared/jb_log.hpp` shim wraps `os_log_create("com.jackbridge", …)` with categories `daemon`, `driver`, `shm`, `jack` and `JB_LOG_{ERR,INFO,DEFAULT,DEBUG}` macros that pass format-string literals (so they aren't redacted as `<private>`; `%{public}s` is used where caller-supplied strings need to be visible). Plan claimed the HAL already used `os_log` — it didn't, it was on raw `syslog`. Both targets now route everything through the shim: daemon attach/shutdown/version/heartbeat paths, plug-in StaticInitializer/CreateDevices, device init/StartIO/StopIO, watchdog flip. Two known caveats: (1) the inside-RT verbose `printf`s inside `process_callback` / `check_progress` are left alone with a FIXME — pre-existing RT-safety violation, not 3.3's job to fix; (2) usage/help text on argv parsing still goes to `stderr` because that path is operator-CLI-invoked, not LaunchAgent-invoked. Tail with `log stream --predicate 'subsystem == "com.jackbridge"'`.
 
 ### 3.4 Plist-based config (½ day)
 - `/Library/Application Support/JackBridge/config.plist` for: jackd buffer size, sample rate (still 48k only), aggregate UID override, log level.
 - Env-var overrides for debugging (`JACKBRIDGE_DEBUG`, `JACKBRIDGE_BUFFER`).
 
-### 3.5 Delete dead code — **mostly DONE during Phase 1.1 sweep**
-`libs/`, `driver/ReadMe.txt`, and the unused PublicUtility files (`CADebugger`, `CAGuard`, `CAVolumeCurve`) all deleted. README's `JackBridge` branch reference fixed. Remaining: update or delete `tools/rmshm.c` (still targets `/jackrouter`) — Phase 2's lifecycle fix likely makes it obsolete.
+### 3.5 Delete dead code — **DONE**
+`libs/`, `driver/ReadMe.txt`, and the unused PublicUtility files (`CADebugger`, `CAGuard`, `CAVolumeCurve`) all deleted. README's `JackBridge` branch reference fixed. `tools/rmshm.c` already targets `/JackBridge`; the additional `/jackrouter` + `/jackrouter2` unlinks are intentional upgrade cleanup for users coming from upstream `madhatter68/JackRouter` — CLAUDE.md updated to reflect that it's a feature, not vestigial.
 
 ### 3.6 Notarized installer pipeline in CI (1 day)
 - GitHub Actions workflow: build → sign → notarize → staple → release.

@@ -62,7 +62,7 @@
 #include "CAMutex.h"
 
 // For Jack
-#include <syslog.h>
+#include "jb_log.hpp"
 #include <sys/shm.h>
 #include <unistd.h>
 #include <string.h>
