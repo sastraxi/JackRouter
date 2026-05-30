@@ -18,6 +18,9 @@ Done on Sequoia 15.7.2 / M1 Pro with ad-hoc sign. Tahoe + Developer ID deferred.
 ### Spike B — confirm Config B clock stability — **PARTIAL (30s smoke clean, 1hr deferred)**
 30s smoke at 48k/1024-period clean once Mac jackd is at `-P 75` (default `-P 10` underflows constantly). Mac was on Wi-Fi, so the formal 1hr capture is deferred until wired-Ethernet is in place. See [docs/spike-b-clock-stability.md](docs/spike-b-clock-stability.md). Phase 1.5 must enforce `-P 75`.
 
+### Spike C — characterize Config B round-trip latency — **TODO**
+Same topology as Spike B (see that doc for details of how we set it up). Use `jack_iodelay` (impulse loopback) to measure round-trip latency Pi ↔ Mac across a small matrix: period sizes (128 / 256 / 512 / 1024 frames) × netjack2 cycles (1 / 2 / 3), all at 48 kHz. Produces a latency-vs-stability curve so we know which setting to default `jackd-launch` to in Phase 1.5 and what to advertise as the achievable floor for the pi-stomp use case. No formal pass criterion — the deliverable is a table + a recommended default. Spike doc to land at `docs/spike-c-latency.md` once run.
+
 ---
 
 ## Phase 1 — Build + load on current macOS (4–6 days)
@@ -27,25 +30,17 @@ Done on Sequoia 15.7.2 / M1 Pro with ad-hoc sign. Tahoe + Developer ID deferred.
 ### 1.1 Xcode project modernization — **DONE**
 Universal `.driver` (arm64 + x86_64) builds clean under Xcode 26.3 / SDK 26.2 with `MACOSX_DEPLOYMENT_TARGET=13.0`, `CLANG_CXX_LANGUAGE_STANDARD=c++17`, `ALWAYS_SEARCH_USER_PATHS=NO`, `ONLY_ACTIVE_ARCH=NO` for Release. PublicUtility headers all compile clean against the current SDK — no overlap conflicts to resolve; pruning unused headers (CAVolumeCurve, CAGuard, CAHostTimeBase) folds into Phase 3 dead-code deletion. Only outstanding warnings are 6 pre-existing sign-compare instances in `SA_Device.cpp`. Smoke-loading the built `.driver` is Phase 1.6.
 
-### 1.2 Daemon Xcode target (1 day)
-- Delete `daemon/build.sh`. Add a CLI tool target inside the Xcode workspace.
-- Universal binary. Link against JACK2 v1.9.22+ official `.pkg` at `/usr/local/lib/libjack.0.dylib`.
-- Output: `JackBridged` binary, ready to sign.
+### 1.2 Daemon Xcode target — **DONE**
+`JackBridged` CLI tool target added to `driver/JackBridgePlugIn.xcodeproj` alongside the driver. Universal (arm64 + x86_64), links `/usr/local/lib/libjack.0.dylib` + CoreAudio/CoreFoundation/CoreMIDI, deployment target 13.0, c++17. `daemon/build.sh` deleted. Recovered `jackClient.{cpp,hpp}` from git (Phase 3.5 dead-code sweep had nuked `libs/` while symlinks in `daemon/` still pointed there); `daemon/JackBridge.h` stays a symlink to the driver copy until Phase 2.1 deduplicates the IPC header properly. Source-level signing entitlements are Phase 1.3.
 
-### 1.3 Codesigning + entitlements (1 day)
-- Driver: Developer ID Application, hardened runtime, no entitlements.
-- Daemon: Developer ID Application, hardened runtime, entitlement `com.apple.security.cs.disable-library-validation` (for libjack).
-- Generate `daemon.entitlements` plist. Document the cert setup in `docs/macos-setup.md` (already drafted).
+### 1.3 Codesigning + entitlements — **DONE**
+`ENABLE_HARDENED_RUNTIME=YES` set at the project level (applies to both targets). `daemon/daemon.entitlements` written with `com.apple.security.cs.disable-library-validation`; wired to the `JackBridged` target via `CODE_SIGN_ENTITLEMENTS`. Driver target carries no entitlements. Local builds ad-hoc-sign with `-o runtime` (verified: `codesign -dvv` shows `flags=adhoc,runtime`, daemon has the entitlement, driver has none). Developer ID identity is intentionally not baked in — the release pipeline (Phase 1.4 / 3.6) overrides `CODE_SIGN_IDENTITY` at `xcodebuild` time using the sequence already drafted in `docs/macos-setup.md`. Cert provisioning itself is the operator's job, not the project's.
 
-### 1.4 Installer pipeline (1 day)
-- `pkgbuild` → `productbuild` → `notarytool submit --wait` → `stapler staple`.
-- Layout: driver to `/Library/Audio/Plug-Ins/HAL/`, daemon to `/Library/Application Support/JackBridge/`, LaunchAgents to `/Library/LaunchAgents/`.
-- Postinstall script: `killall coreaudiod`, register LaunchAgents.
+### 1.4 Installer pipeline — **DONE (LaunchAgents deferred to 1.5)**
+`installer/build-pkg.sh` orchestrates `xcodebuild` (both targets, Release) → staging → `pkgbuild` → `productbuild` → optional `notarytool submit --wait` + `stapler staple`. Distribution xml lives at `installer/distribution.xml.in` (versioned via `@VERSION@` substitution; pins min macOS 13.0, arm64+x86_64). Postinstall script is `installer/scripts/postinstall` — currently just `killall coreaudiod`; LaunchAgent registration lands in 1.5 alongside the plists themselves. Local smoke produces `installer/build/JackBridge-<ver>.pkg` with driver at `/Library/Audio/Plug-Ins/HAL/JackBridgePlugIn.driver` and daemon at `/Library/Application Support/JackBridge/JackBridged`; signing/notarization gate on `SIGN_APP_IDENTITY` / `SIGN_INSTALLER_IDENTITY` / `NOTARY_PROFILE` env vars so the same script serves dev and release. A dummy notarized submission (per the riskiest-unknowns note) still needs to be run once a Developer ID cert is in hand.
 
-### 1.5 LaunchAgent plists (½ day)
-- `com.jackbridge.daemon.plist` — runs the daemon, `LimitLoadToSessionType=Aqua`, `KeepAlive`.
-- `com.jackbridge.jackd.plist` — runs the `jackd-launch` wrapper.
-- Both per-user, instantiated per session.
+### 1.5 LaunchAgent plists — **DONE**
+Two LaunchAgents under `installer/launchagents/`: `com.jackbridge.daemon.plist` runs `JackBridged`; `com.jackbridge.jackd.plist` runs `jackd-launch`. Both are `LimitLoadToSessionType=Aqua`, `KeepAlive`, `RunAtLoad`, `ProcessType=Interactive`; logs to `/tmp/<label>.{out,err}.log` for now (3.3 swaps in `os_log`). `installer/jackd-launch` wraps `jackd -R -P 75 -d coreaudio [-d ~:<aggregate-uid>] -r 48000 -p 128` then `jack_load netmanager` — reads `/Library/Application Support/JackBridge/aggregate-uid` when present, falls back to jackd's default device picker when not (3.1 writes the UID file at first-run). `build-pkg.sh` now stages the plists into `/Library/LaunchAgents/` and the wrapper alongside the daemon binary. Postinstall does the usual `killall coreaudiod` then bootstraps both labels into the active GUI user's session via `launchctl bootstrap gui/<uid>` so install-time activation doesn't require a logout cycle; the `Aqua` session-type constraint still gates auto-load for subsequent logins. `plutil -lint` clean on both plists.
 
 ### 1.6 Smoke test (½ day)
 - Clean macOS install. Install `.pkg`. Reboot. Confirm:
@@ -111,9 +106,7 @@ Universal `.driver` (arm64 + x86_64) builds clean under Xcode 26.3 / SDK 26.2 wi
 - `jackd-launch` reads that UID, passes to `jackd -d coreaudio -d ~:<uid>`.
 - Re-create on demand if the user deletes it from Audio MIDI Setup.
 
-### 3.2 Meaningful channel labels (¼ day)
-- Edit HAL property tables in `SA_Device.cpp` — channel names like "Pi Wet L/R", "Pi DI L/R" instead of generic "Input 1/2."
-- Show up in DAW I/O pickers, makes the device self-explanatory.
+### 3.2 Meaningful channel labels (¼ day) -- *SKIPPED*
 
 ### 3.3 Logging via `os_log` (½ day)
 - Replace `printf`/`stderr` in daemon with `os_log` under subsystem `com.jackbridge`, categories `daemon`, `shm`, `jack`.
@@ -133,7 +126,7 @@ Universal `.driver` (arm64 + x86_64) builds clean under Xcode 26.3 / SDK 26.2 wi
 - Produces a `.pkg` per tagged release.
 
 ### 3.7 First-run TCC + permissions (½ day)
-- One-shot helper app on first install to prompt for any required permissions (microphone TCC if needed for HAL input recording — verify).
+- Installer that prompts for any required permissions (microphone TCC if needed for HAL input recording — verify).
 - Documentation for the inevitable "I have to do what in System Settings?" question.
 
 ### 3.8 README + onboarding (½ day)

@@ -1,0 +1,25 @@
+#!/bin/sh
+# JackBridge postinstall.
+#
+# - Reload coreaudiod so the freshly-installed HAL plugin is picked up.
+# - Bootstrap the per-user LaunchAgents into the active GUI session so the user
+#   doesn't have to log out / back in.
+#
+# The LaunchAgents themselves carry LimitLoadToSessionType=Aqua, so they will
+# also be auto-loaded by launchd for any subsequent GUI login.
+
+set -e
+
+/usr/bin/killall coreaudiod 2>/dev/null || true
+
+loggedInUser=$(/usr/bin/stat -f%Su /dev/console)
+if [ -n "$loggedInUser" ] && [ "$loggedInUser" != "root" ]; then
+    loggedInUID=$(/usr/bin/id -u "$loggedInUser")
+    for label in com.jackbridge.jackd com.jackbridge.daemon; do
+        plist="/Library/LaunchAgents/$label.plist"
+        /bin/launchctl bootout "gui/$loggedInUID/$label" 2>/dev/null || true
+        /bin/launchctl bootstrap "gui/$loggedInUID" "$plist" || true
+    done
+fi
+
+exit 0

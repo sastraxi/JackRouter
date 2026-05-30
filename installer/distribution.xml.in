@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<installer-gui-script minSpecVersion="2">
+    <title>JackBridge</title>
+    <organization>com.jackbridge</organization>
+    <options customize="never" require-scripts="true" hostArchitectures="arm64,x86_64"/>
+    <volume-check>
+        <allowed-os-versions>
+            <os-version min="13.0"/>
+        </allowed-os-versions>
+    </volume-check>
+    <domains enable_localSystem="true"/>
+    <choices-outline>
+        <line choice="default">
+            <line choice="com.jackbridge.pkg"/>
+        </line>
+    </choices-outline>
+    <choice id="default"/>
+    <choice id="com.jackbridge.pkg" visible="false">
+        <pkg-ref id="com.jackbridge.pkg"/>
+    </choice>
+    <pkg-ref id="com.jackbridge.pkg" version="@VERSION@" onConclusion="none">JackBridge-component.pkg</pkg-ref>
+</installer-gui-script>

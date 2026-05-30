@@ -1,7 +1,5 @@
-daemon/jackrouter
-daemon/JackBridge
-daemon/JackBridgeWithMidi
-driver/Build/
+driver/build/
+installer/build/
 cscope.*
 xcuserdata
 dist/
