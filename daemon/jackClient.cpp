@@ -74,7 +74,7 @@ void JackClient::_on_shutdown(void *arg) {
 JackClient::JackClient(const char* name, uint32_t flags) {
     jack_status_t jst;
 
-    client = jack_client_open(name, JackNullOption, &jst);
+    client = jack_client_open(name, JackNoStartServer, &jst);
     if (!client) {
         JB_LOG_ERR(jb_log_jack(),
             "jack_client_open(\"%{public}s\") failed status=0x%x — is jackd running with the CoreAudio backend? See docs/macos-setup.md.",
