@@ -27,14 +27,20 @@ PKG_ID="com.jackbridge.pkg"
 PKG_OUT="$BUILD/JackBridge-$VERSION.pkg"
 JACK_MIN_VERSION="1.9.22"
 
+# Where to find JACK2 headers + dylib at build time. Matches the JACK_PREFIX
+# Xcode build setting; override both together when building against a non-
+# default prefix (e.g. arm64 Homebrew: JACK_PREFIX=/opt/homebrew).
+JACK_PREFIX="${JACK_PREFIX:-/usr/local}"
+
 check_jack() {
-    if [ ! -f /usr/local/include/jack/jack.h ] || [ ! -f /usr/local/lib/libjack.0.dylib ]; then
-        echo "error: JACK2 headers/dylib not found in /usr/local." >&2
+    if [ ! -f "$JACK_PREFIX/include/jack/jack.h" ] || [ ! -f "$JACK_PREFIX/lib/libjack.0.dylib" ]; then
+        echo "error: JACK2 headers/dylib not found under $JACK_PREFIX." >&2
         echo "       install JACK2 ${JACK_MIN_VERSION}+ from https://github.com/jackaudio/jack2-releases/releases" >&2
+        echo "       or override the prefix: JACK_PREFIX=/opt/homebrew $0 ..." >&2
         exit 1
     fi
-    if [ -x /usr/local/bin/jackd ]; then
-        ver=$(/usr/local/bin/jackd --version 2>&1 | head -1 | awk '{print $3}')
+    if [ -x "$JACK_PREFIX/bin/jackd" ]; then
+        ver=$("$JACK_PREFIX/bin/jackd" --version 2>&1 | head -1 | awk '{print $3}')
         if [ -n "$ver" ] && ! printf '%s\n%s\n' "$JACK_MIN_VERSION" "$ver" | sort -V -C; then
             echo "error: JACK2 $ver too old (need ${JACK_MIN_VERSION}+)." >&2
             exit 1
@@ -52,6 +58,7 @@ XCBUILD_ARGS=(
     -project "$ROOT/driver/JackBridgePlugIn.xcodeproj"
     -configuration Release
     CONFIGURATION_BUILD_DIR="$BUILD/xcode"
+    "JACK_PREFIX=$JACK_PREFIX"
 )
 if [[ -n "${SIGN_APP_IDENTITY:-}" ]]; then
     XCBUILD_ARGS+=(CODE_SIGN_IDENTITY="$SIGN_APP_IDENTITY" CODE_SIGN_STYLE=Manual OTHER_CODE_SIGN_FLAGS="--timestamp")

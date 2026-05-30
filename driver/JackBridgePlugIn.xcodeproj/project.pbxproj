@@ -82,7 +82,7 @@
 		DA0000000000000000000002 /* jackClient.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = jackClient.cpp; sourceTree = "<group>"; };
 		DA0000000000000000000003 /* jackClient.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = jackClient.hpp; sourceTree = "<group>"; };
 		DA0000000000000000000005 /* CoreMIDI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreMIDI.framework; path = System/Library/Frameworks/CoreMIDI.framework; sourceTree = SDKROOT; };
-		DA0000000000000000000006 /* libjack.0.dylib */ = {isa = PBXFileReference; lastKnownFileType = "compiled.mach-o.dylib"; name = libjack.0.dylib; path = /usr/local/lib/libjack.0.dylib; sourceTree = "<absolute>"; };
+		DA0000000000000000000006 /* libjack.0.dylib */ = {isa = PBXFileReference; lastKnownFileType = "compiled.mach-o.dylib"; name = libjack.0.dylib; path = "$(JACK_PREFIX)/lib/libjack.0.dylib"; sourceTree = "<absolute>"; };
 		DA0000000000000000000007 /* JackBridged */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = JackBridged; sourceTree = BUILT_PRODUCTS_DIR; };
 		DA0000000000000000000008 /* daemon.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = daemon.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -364,6 +364,7 @@
 				CLANG_CXX_LANGUAGE_STANDARD = "c++17";
 				ENABLE_HARDENED_RUNTIME = YES;
 				HEADER_SEARCH_PATHS = "$(SRCROOT)/../shared";
+				JACK_PREFIX = /usr/local;
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
 				CLANG_CXX_LIBRARY = "libc++";
 				CLANG_WARN_CONSTANT_CONVERSION = YES;
@@ -405,6 +406,7 @@
 				CLANG_CXX_LANGUAGE_STANDARD = "c++17";
 				ENABLE_HARDENED_RUNTIME = YES;
 				HEADER_SEARCH_PATHS = "$(SRCROOT)/../shared";
+				JACK_PREFIX = /usr/local;
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
 				CLANG_CXX_LIBRARY = "libc++";
 				CLANG_WARN_CONSTANT_CONVERSION = YES;
@@ -444,6 +446,7 @@
 				CLANG_CXX_LANGUAGE_STANDARD = "c++17";
 				ENABLE_HARDENED_RUNTIME = YES;
 				HEADER_SEARCH_PATHS = "$(SRCROOT)/../shared";
+				JACK_PREFIX = /usr/local;
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
 				CLANG_CXX_LIBRARY = "libc++";
 				CLANG_WARN_CONSTANT_CONVERSION = YES;
@@ -536,9 +539,9 @@
 				);
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
-					/usr/local/include,
+					"$(JACK_PREFIX)/include",
 				);
-				LIBRARY_SEARCH_PATHS = /usr/local/lib;
+				LIBRARY_SEARCH_PATHS = "$(JACK_PREFIX)/lib";
 				INSTALL_PATH = "/Library/Application Support/JackBridge";
 				PRODUCT_BUNDLE_IDENTIFIER = com.jackbridge.daemon;
 				PRODUCT_NAME = JackBridged;
@@ -555,9 +558,9 @@
 				);
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
-					/usr/local/include,
+					"$(JACK_PREFIX)/include",
 				);
-				LIBRARY_SEARCH_PATHS = /usr/local/lib;
+				LIBRARY_SEARCH_PATHS = "$(JACK_PREFIX)/lib";
 				INSTALL_PATH = "/Library/Application Support/JackBridge";
 				PRODUCT_BUNDLE_IDENTIFIER = com.jackbridge.daemon;
 				PRODUCT_NAME = JackBridged;
@@ -574,9 +577,9 @@
 				);
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
-					/usr/local/include,
+					"$(JACK_PREFIX)/include",
 				);
-				LIBRARY_SEARCH_PATHS = /usr/local/lib;
+				LIBRARY_SEARCH_PATHS = "$(JACK_PREFIX)/lib";
 				INSTALL_PATH = "/Library/Application Support/JackBridge";
 				PRODUCT_BUNDLE_IDENTIFIER = com.jackbridge.daemon;
 				PRODUCT_NAME = JackBridged;

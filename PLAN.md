@@ -113,10 +113,11 @@ New `shared/jb_log.hpp` shim wraps `os_log_create("com.jackbridge", …)` with c
 ### 3.5 Delete dead code — **DONE**
 `libs/`, `driver/ReadMe.txt`, and the unused PublicUtility files (`CADebugger`, `CAGuard`, `CAVolumeCurve`) all deleted. README's `JackBridge` branch reference fixed. `tools/rmshm.c` already targets `/JackBridge`; the additional `/jackrouter` + `/jackrouter2` unlinks are intentional upgrade cleanup for users coming from upstream `madhatter68/JackRouter` — CLAUDE.md updated to reflect that it's a feature, not vestigial.
 
-### 3.6 Notarized installer pipeline in CI (1 day)
-- GitHub Actions workflow: build → sign → notarize → staple → release.
-- Secrets: Developer ID cert, app-specific password.
-- Produces a `.pkg` per tagged release.
+### 3.6 Notarized installer pipeline in CI — **DONE (pending end-to-end run with real secrets)**
+Two workflows under `.github/workflows/`:
+- `ci.yml` — PR + master push smoke build. Installs JACK2 via Homebrew, shims `/opt/homebrew/{include,lib}/jack*` into `/usr/local/{include,lib}` so the daemon target's hardcoded paths still resolve on arm64 runners, then `xcodebuild` Release for both targets, both arches. No signing.
+- `release.yml` — fires on `v*.*.*` tag push. Imports the Developer ID `.p12` (base64-encoded in `APPLE_DEVELOPER_ID_CERT_P12`) into a per-run keychain, `set-key-partition-list` to silence codesign prompts, `notarytool store-credentials` for a `jackbridge-notary` keychain profile, then `installer/build-pkg.sh "$version"` with `SIGN_APP_IDENTITY` / `SIGN_INSTALLER_IDENTITY` / `NOTARY_PROFILE` env vars. Keychain is torn down in an `if: always()` step. `softprops/action-gh-release@v2` attaches the `.pkg` to a generated release.
+Required secrets are documented at the top of `release.yml`. The `/usr/local` shim was retired in the same pass: a project-level `JACK_PREFIX` build setting (default `/usr/local`) now stands in for the three hardcoded daemon-target paths plus the `libjack.0.dylib` file reference, so arm64 Homebrew installs work directly by passing `JACK_PREFIX=/opt/homebrew` (CI workflows do this from `brew --prefix`). `installer/build-pkg.sh` reads the same env var for its preflight check and forwards it to `xcodebuild`.
 
 ### 3.7 First-run TCC + permissions (½ day)
 - Installer that prompts for any required permissions (microphone TCC if needed for HAL input recording — verify).
