@@ -106,9 +106,27 @@ New shm fields at offsets 0x130 (`shmProtocolVersion`) and 0x138 (`shmDaemonAliv
 ### 3.3 Logging via `os_log` — **DONE**
 New `shared/jb_log.hpp` shim wraps `os_log_create("com.jackbridge", …)` with categories `daemon`, `driver`, `shm`, `jack` and `JB_LOG_{ERR,INFO,DEFAULT,DEBUG}` macros that pass format-string literals (so they aren't redacted as `<private>`; `%{public}s` is used where caller-supplied strings need to be visible). Plan claimed the HAL already used `os_log` — it didn't, it was on raw `syslog`. Both targets now route everything through the shim: daemon attach/shutdown/version/heartbeat paths, plug-in StaticInitializer/CreateDevices, device init/StartIO/StopIO, watchdog flip. Two known caveats: (1) the inside-RT verbose `printf`s inside `process_callback` / `check_progress` are left alone with a FIXME — pre-existing RT-safety violation, not 3.3's job to fix; (2) usage/help text on argv parsing still goes to `stderr` because that path is operator-CLI-invoked, not LaunchAgent-invoked. Tail with `log stream --predicate 'subsystem == "com.jackbridge"'`.
 
-### 3.4 Plist-based config (½ day)
-- `/Library/Application Support/JackBridge/config.plist` for: jackd buffer size, sample rate (still 48k only), aggregate UID override, log level.
-- Env-var overrides for debugging (`JACKBRIDGE_DEBUG`, `JACKBRIDGE_BUFFER`).
+### 3.4 Plist-based config — **PARTIAL (defaults file + WatchPaths landed; parsing deferred)**
+Default `config.plist` is staged to `/Library/Application Support/JackBridge/config.plist` by `installer/build-pkg.sh`; both LaunchAgents have `WatchPaths` pointing at it, so a save triggers `launchctl` to restart jackd + daemon automatically. Schema documented in-file. Currently informational only — no consumer reads it yet. Full wire-up is 3.4.x below.
+
+### 3.4.1 Reader shim (½ day)
+- `shared/jb_config.{hpp,cpp}` — single source of truth for parsing. C++ side (daemon) uses `CFPreferencesCopyAppValue` / `CFPropertyListCreateWithData` against the absolute path; shell side (`jackd-launch`) uses `/usr/libexec/PlistBuddy -c "Print :<key>"` with `2>/dev/null || echo <default>` fallbacks. Missing file = all defaults. Missing key = that key's default. Malformed file = log loudly, fall back to defaults, do **not** refuse to start (fail-loud-but-keep-going; an unreadable config shouldn't brick audio).
+- Defaults live in code, not in the installed file. The installed file is purely a template the user can edit; deleting it must still produce a working system on next restart.
+
+### 3.4.2 jackd-launch consumption (¼ day)
+- Read `SampleRate`, `PeriodFrames`, `RealtimePriority`, `AggregateDeviceUID`, `NetJack:MTU` via PlistBuddy.
+- `AggregateDeviceUID` from config takes precedence over the legacy `aggregate-uid` file (Phase 3.1 helper migrates the file's contents into the plist on first run, then deletes it).
+- `RealtimePriority < 75` logs a warning citing Spike B before honoring it.
+- MTU passes through to `jack_load netmanager -i "--mtu <n>"`.
+
+### 3.4.3 Daemon consumption (½ day)
+- `AutoConnect.{ToNetmanager,FromNetmanager,LocalMonitoring}` drive a post-`jack_activate` wiring pass: enumerate `netmanager:*` and `system:playback_*` ports, `jack_connect` per the policy. Reconnect on JackPortRegistration callbacks so connections survive netmanager (re)loads.
+- `Logging.Level` maps to the `jb_log` shim's threshold (error/warn/info/debug → `OS_LOG_TYPE_*`).
+- All reads happen once at startup. SIGHUP handler deferred — `WatchPaths`-triggered full restart is the reload mechanism and it's good enough; no incremental reload until profiling says otherwise.
+
+### 3.4.4 Upgrade safety (¼ day)
+- pkg currently overwrites `config.plist` on upgrade, which would clobber user edits. Move the file out of the component payload and have `postinstall` write it only if absent (`[ -f "$DEST" ] || install ...`). Bundle the default as a sibling `config.plist.default` for diffing.
+- Migration: if `aggregate-uid` exists and the plist's `AggregateDeviceUID` is empty, fold the file contents into the plist and remove the file. Idempotent.
 
 ### 3.5 Delete dead code — **DONE**
 `libs/`, `driver/ReadMe.txt`, and the unused PublicUtility files (`CADebugger`, `CAGuard`, `CAVolumeCurve`) all deleted. README's `JackBridge` branch reference fixed. `tools/rmshm.c` already targets `/JackBridge`; the additional `/jackrouter` + `/jackrouter2` unlinks are intentional upgrade cleanup for users coming from upstream `madhatter68/JackRouter` — CLAUDE.md updated to reflect that it's a feature, not vestigial.

@@ -16,6 +16,10 @@
     <string>Aqua</string>
     <key>ProcessType</key>
     <string>Interactive</string>
+    <key>WatchPaths</key>
+    <array>
+        <string>/Library/Application Support/JackBridge/config.plist</string>
+    </array>
     <key>StandardOutPath</key>
     <string>/tmp/com.jackbridge.daemon.out.log</string>
     <key>StandardErrorPath</key>

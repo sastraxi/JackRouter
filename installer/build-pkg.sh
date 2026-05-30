@@ -71,6 +71,7 @@ xcodebuild "${XCBUILD_ARGS[@]}" -target JackBridged build >/dev/null
 cp -R "$BUILD/xcode/JackBridgePlugIn.driver" "$STAGING/Library/Audio/Plug-Ins/HAL/"
 cp    "$BUILD/xcode/JackBridged"             "$STAGING/Library/Application Support/JackBridge/"
 install -m 0755 "$INSTALLER/jackd-launch"    "$STAGING/Library/Application Support/JackBridge/jackd-launch"
+install -m 0644 "$INSTALLER/config.plist"     "$STAGING/Library/Application Support/JackBridge/config.plist"
 install -m 0644 "$INSTALLER/launchagents/com.jackbridge.daemon.plist" "$STAGING/Library/LaunchAgents/"
 install -m 0644 "$INSTALLER/launchagents/com.jackbridge.jackd.plist"  "$STAGING/Library/LaunchAgents/"
 
