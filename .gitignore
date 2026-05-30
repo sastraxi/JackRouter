@@ -1,5 +1,7 @@
 driver/build/
 installer/build/
+tools/stress_atomic
+tools/stress_atomic.dSYM/
 cscope.*
 xcuserdata
 dist/

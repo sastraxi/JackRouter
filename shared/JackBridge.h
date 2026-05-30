@@ -35,7 +35,25 @@
 #include <errno.h>
 #include <sys/stat.h>
 #include <stdint.h>
+#include <atomic>
 #include <mach/mach_time.h>
+
+// IPC contract version. Bump on every shm layout change (sizes, offsets, field
+// types, sync semantics). Phase 2.3 wires the handshake — daemon and HAL both
+// refuse to attach on mismatch.
+#define JACKBRIDGE_PROTOCOL_VERSION 2
+
+// shm sync fields are std::atomic<uint64_t> placed by reinterpret_cast over the
+// mapped region. Both targets must agree that the type is lock-free and the
+// representation is just an aligned uint64_t — true on every arm64 / x86_64
+// target we ship to, but assert it at compile time so a future toolchain
+// surprise fails loudly instead of silently corrupting the IPC.
+static_assert(sizeof(std::atomic<uint64_t>) == sizeof(uint64_t),
+              "std::atomic<uint64_t> must have the same layout as uint64_t");
+static_assert(alignof(std::atomic<uint64_t>) == alignof(uint64_t),
+              "std::atomic<uint64_t> must have the same alignment as uint64_t");
+static_assert(std::atomic<uint64_t>::is_always_lock_free,
+              "std::atomic<uint64_t> must be lock-free on this target");
 
 /******************************************************************************
  Audio functions (Generic/CoreAudio)
@@ -95,17 +113,17 @@ protected:
     sample_t *buf_down[MAX_STREAMS];
     uint64_t   FrameNumber;
     int        FramesPerBuffer;
-    volatile uint64_t     *shmNumberTimeStamps;
-    volatile uint64_t     *shmZeroHostTime;
-    volatile uint64_t     *shmSeed;
-    volatile uint64_t     *shmSyncMode;
-    volatile uint64_t     *shmBufferSize;
-    volatile uint64_t     *shmDriverStatus;
+    std::atomic<uint64_t> *shmNumberTimeStamps;
+    std::atomic<uint64_t> *shmZeroHostTime;
+    std::atomic<uint64_t> *shmSeed;
+    std::atomic<uint64_t> *shmSyncMode;
+    std::atomic<uint64_t> *shmBufferSize;
+    std::atomic<uint64_t> *shmDriverStatus;
 #define JB_DRV_STATUS_INIT      0
 #define JB_DRV_STATUS_ACTIVE    1
 #define JB_DRV_STATUS_STARTED   2
-    volatile uint64_t     *shmReadFrameNumber[MAX_STREAMS];
-    volatile uint64_t     *shmWriteFrameNumber[MAX_STREAMS];
+    std::atomic<uint64_t> *shmReadFrameNumber[MAX_STREAMS];
+    std::atomic<uint64_t> *shmWriteFrameNumber[MAX_STREAMS];
 
     int create_shm() {
         struct stat stat;
@@ -167,18 +185,18 @@ protected:
             return -1;
         }
 
-        shmNumberTimeStamps = (uint64_t*)(shm_base+0x100);
-        shmZeroHostTime = (uint64_t*)(shm_base+0x108);
-        shmSeed = (uint64_t*)(shm_base+0x110);
-        shmSyncMode = (uint64_t*)(shm_base+0x118);
-        shmBufferSize = (uint64_t*)(shm_base+0x120);
-        shmDriverStatus = (uint64_t*)(shm_base+0x128);
+        shmNumberTimeStamps = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+0x100);
+        shmZeroHostTime = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+0x108);
+        shmSeed = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+0x110);
+        shmSyncMode = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+0x118);
+        shmBufferSize = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+0x120);
+        shmDriverStatus = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+0x128);
 
         for(int i=0; i<MAX_STREAMS; i++) {
             buf_up[i]   = (sample_t*)(shm_base + STRBUF_UP(i));
             buf_down[i] = (sample_t*)(shm_base + STRBUF_DOWN(i));
-            shmReadFrameNumber[i] = (uint64_t*)(shm_base+0x180);
-            shmWriteFrameNumber[i] = (uint64_t*)(shm_base+0x188+i*0x10);
+            shmReadFrameNumber[i] = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+0x180);
+            shmWriteFrameNumber[i] = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+0x188+i*0x10);
         }
         
         return 0;

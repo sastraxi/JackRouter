@@ -47,7 +47,7 @@ Two processes, one shared-memory region (`/JackBridge`), two ring buffers (in + 
 
 ## Key idiosyncrasies (do not be surprised by these)
 
-- **`JackBridge.h` is byte-duplicated** between `daemon/` and `driver/JackBridge/Plug-In/`. The IPC contract is maintained by hand. Phase 3 deduplicates this.
+- **IPC contract header** lives at `shared/JackBridge.h`. Both targets pick it up via `HEADER_SEARCH_PATHS=$(SRCROOT)/../shared`. Bump `JACKBRIDGE_PROTOCOL_VERSION` on every shm layout change; Phase 2.3 wires the refuse-on-mismatch handshake.
 - **POSIX shm uses `volatile` reads, no atomics, no barriers.** Daemon's own FIXMEs admit it. Works on x86 by accident; broken on Apple Silicon.
 - **Hardcoded `*2` and `8`-byte-per-frame literals** throughout assume stereo float. Don't generalize without auditing every site.
 - **No `jack_on_shutdown` handler.** If jackd dies, HAL keeps reporting STARTED and DAW gets silence forever.

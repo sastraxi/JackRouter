@@ -25,6 +25,23 @@ SCRIPTS="$INSTALLER/scripts"
 
 PKG_ID="com.jackbridge.pkg"
 PKG_OUT="$BUILD/JackBridge-$VERSION.pkg"
+JACK_MIN_VERSION="1.9.22"
+
+check_jack() {
+    if [ ! -f /usr/local/include/jack/jack.h ] || [ ! -f /usr/local/lib/libjack.0.dylib ]; then
+        echo "error: JACK2 headers/dylib not found in /usr/local." >&2
+        echo "       install JACK2 ${JACK_MIN_VERSION}+ from https://github.com/jackaudio/jack2-releases/releases" >&2
+        exit 1
+    fi
+    if [ -x /usr/local/bin/jackd ]; then
+        ver=$(/usr/local/bin/jackd --version 2>&1 | head -1 | awk '{print $3}')
+        if [ -n "$ver" ] && ! printf '%s\n%s\n' "$JACK_MIN_VERSION" "$ver" | sort -V -C; then
+            echo "error: JACK2 $ver too old (need ${JACK_MIN_VERSION}+)." >&2
+            exit 1
+        fi
+    fi
+}
+check_jack
 
 rm -rf "$BUILD"
 mkdir -p "$STAGING/Library/Audio/Plug-Ins/HAL"

@@ -1353,16 +1353,16 @@ void	SA_Device::GetZeroTimeStamp(Float64& outSampleTime, UInt64& outHostTime, UI
     }
     
     //  set the return values
-    if (*shmSyncMode == 1) {
-        outSampleTime = (*shmNumberTimeStamps) * mRingBufferFrameSize;
-        outHostTime = *shmZeroHostTime;
+    if (shmSyncMode->load(std::memory_order_acquire) == 1) {
+        outSampleTime = shmNumberTimeStamps->load(std::memory_order_acquire) * mRingBufferFrameSize;
+        outHostTime = shmZeroHostTime->load(std::memory_order_acquire);
     } else {
         outSampleTime = gDevice_NumberTimeStamps * mRingBufferFrameSize;
         outHostTime = gDevice_AnchorHostTime + (((Float64)gDevice_NumberTimeStamps) * theHostTicksPerRingBuffer);
-        *shmNumberTimeStamps = gDevice_NumberTimeStamps;
-        *shmZeroHostTime = outHostTime;
+        shmNumberTimeStamps->store(gDevice_NumberTimeStamps, std::memory_order_relaxed);
+        shmZeroHostTime->store(outHostTime, std::memory_order_release);
     }
-    outSeed = *shmSeed;
+    outSeed = shmSeed->load(std::memory_order_acquire);
 }
 
 void	SA_Device::WillDoIOOperation(UInt32 inOperationID, bool& outWillDo, bool& outWillDoInPlace) const
@@ -1422,7 +1422,7 @@ void	SA_Device::ReadInputData(int streamId, UInt32 inIOBufferFrameSize, Float64 
 	//	we need to be holding the IO lock to do this
 	CAMutex::Locker theIOLocker(mIOMutex);
     sample_t *RingBuffer = buf_down[streamId];
-    volatile uint64_t *frameNum = shmReadFrameNumber[streamId];
+    std::atomic<uint64_t> *frameNum = shmReadFrameNumber[streamId];
 	
 	//	figure out where we are starting
 	UInt64 theSampleTime = static_cast<UInt64>(inSampleTime);
@@ -1444,7 +1444,8 @@ void	SA_Device::ReadInputData(int streamId, UInt32 inIOBufferFrameSize, Float64 
     {
         memcpy(theDestination + (theNumberFramesToCopy1 * 8), RingBuffer, theNumberFramesToCopy2 * 8);
     }
-    *frameNum = static_cast<UInt64>(inSampleTime) + inIOBufferFrameSize;
+    frameNum->store(static_cast<UInt64>(inSampleTime) + inIOBufferFrameSize,
+                    std::memory_order_release);
 }
 
 void	SA_Device::WriteOutputData(int streamId, UInt32 inIOBufferFrameSize, Float64 inSampleTime, const void* inBuffer)
@@ -1452,7 +1453,7 @@ void	SA_Device::WriteOutputData(int streamId, UInt32 inIOBufferFrameSize, Float6
 	//	we need to be holding the IO lock to do this
 	CAMutex::Locker theIOLocker(mIOMutex);
     sample_t *RingBuffer = buf_up[streamId];
-    volatile uint64_t *frameNum = shmWriteFrameNumber[streamId];
+    std::atomic<uint64_t> *frameNum = shmWriteFrameNumber[streamId];
 	
 	//	figure out where we are starting
 	UInt64 theSampleTime = static_cast<UInt64>(inSampleTime);
@@ -1474,7 +1475,8 @@ void	SA_Device::WriteOutputData(int streamId, UInt32 inIOBufferFrameSize, Float6
     {
         memcpy(RingBuffer, theSource + (theNumberFramesToCopy1 * 8), theNumberFramesToCopy2 * 8);
     }
-    *frameNum = static_cast<UInt64>(inSampleTime) + inIOBufferFrameSize;
+    frameNum->store(static_cast<UInt64>(inSampleTime) + inIOBufferFrameSize,
+                    std::memory_order_release);
 }
 
 #pragma mark Hardware Accessors
@@ -1500,9 +1502,10 @@ void	SA_Device::_HW_Open()
         Throw(CAException(kAudioHardwareBadDeviceError));
         return;
     }
-    *shmSeed = 1;
-    *shmSyncMode = 0;
-    *shmDriverStatus = mDriverStatus = JB_DRV_STATUS_ACTIVE;
+    shmSeed->store(1, std::memory_order_relaxed);
+    shmSyncMode->store(0, std::memory_order_relaxed);
+    mDriverStatus = JB_DRV_STATUS_ACTIVE;
+    shmDriverStatus->store(JB_DRV_STATUS_ACTIVE, std::memory_order_release);
     mRingBufferFrameSize = STRBUFNUM / 2;
   
     syslog(LOG_WARNING, "JackBridge: Device #%d initialized. ", instance);
@@ -1520,7 +1523,8 @@ kern_return_t	SA_Device::_HW_StartIO()
     if (mDriverStatus == JB_DRV_STATUS_INIT) {
         return kAudioHardwareNotRunningError;
     }
-    *shmDriverStatus = mDriverStatus = JB_DRV_STATUS_STARTED;
+    mDriverStatus = JB_DRV_STATUS_STARTED;
+    shmDriverStatus->store(JB_DRV_STATUS_STARTED, std::memory_order_release);
     gDevice_AnchorHostTime = 0;
     return 0;
 }
@@ -1528,7 +1532,8 @@ kern_return_t	SA_Device::_HW_StartIO()
 void	SA_Device::_HW_StopIO()
 {
     syslog(LOG_WARNING, "JackBridge: Stopping IO Device. ");
-    *shmDriverStatus = mDriverStatus = JB_DRV_STATUS_ACTIVE;
+    mDriverStatus = JB_DRV_STATUS_ACTIVE;
+    shmDriverStatus->store(JB_DRV_STATUS_ACTIVE, std::memory_order_release);
 	return;
 }
 

@@ -56,8 +56,8 @@ public:
         isVerbose = (getenv("JACKBRIDGE_DEBUG")) ? true : false;
         FrameNumber = 0;
         FramesPerBuffer = STRBUFNUM/2;
-        *shmBufferSize = STRBUFSZ;
-        *shmSyncMode = 0;
+        shmBufferSize->store(STRBUFSZ, std::memory_order_release);
+        shmSyncMode->store(0, std::memory_order_release);
 
         config_audio_ports();
 #ifdef _WITH_MIDI_BRIDGE_
@@ -94,7 +94,7 @@ public:
         process_midi_message(nframes);
 #endif // _WITH_MIDI_BRIDGE_
 
-        if (*shmDriverStatus != JB_DRV_STATUS_STARTED) {
+        if (shmDriverStatus->load(std::memory_order_acquire) != JB_DRV_STATUS_STARTED) {
             // Driver isn't working. Just return zero buffer;
             for(int i=0; i<NUM_OUTPUT_CHANNELS; i++) {
                 aout[i] = (sample_t*)jack_port_get_buffer(audioOut[i], nframes);
@@ -111,28 +111,30 @@ public:
             FrameNumber = 0;
 
             if (isSyncMode) {
-                *shmSyncMode = 1;
-                *shmNumberTimeStamps = 0; 
-                (*shmSeed)++;
+                shmSyncMode->store(1, std::memory_order_relaxed);
+                shmNumberTimeStamps->store(0, std::memory_order_relaxed);
+                shmSeed->fetch_add(1, std::memory_order_release);
             }
 
             isActive = true;
             printf("JackBridge#%d: Activated with SyncMode = %s, ZeroHostTime = %llx\n",
-                instance, isSyncMode ? "Yes" : "No", *shmZeroHostTime);
+                instance, isSyncMode ? "Yes" : "No",
+                shmZeroHostTime->load(std::memory_order_acquire));
         }
 
         if ((FrameNumber % FramesPerBuffer) == 0) {
-            // FIXME: Should be atomic operation and do memory barrier
-            if(*shmSyncMode == 1) {
-                *shmZeroHostTime = mach_absolute_time();
-                *shmNumberTimeStamps = FrameNumber / FramesPerBuffer;
-                //(*shmNumberTimeStamps)++;
-            } 
+            if(shmSyncMode->load(std::memory_order_acquire) == 1) {
+                shmZeroHostTime->store(mach_absolute_time(), std::memory_order_relaxed);
+                shmNumberTimeStamps->store(FrameNumber / FramesPerBuffer,
+                                           std::memory_order_release);
+            }
 
             if ((!isSyncMode) && isVerbose && ((ncalls++) % 100) == 0) {
-                printf("JackBridge#%d: ZeroHostTime: %llx, %lld, diff:%d\n",
-                    instance,  *shmZeroHostTime, *shmNumberTimeStamps,
-                    ((int)(mach_absolute_time()+1000000-(*shmZeroHostTime)))-1000000);
+                uint64_t zht = shmZeroHostTime->load(std::memory_order_acquire);
+                printf("JackBridge#%d: ZeroHostTime: %llx, %llu, diff:%d\n",
+                    instance, zht,
+                    shmNumberTimeStamps->load(std::memory_order_acquire),
+                    ((int)(mach_absolute_time()+1000000-zht))-1000000);
             }
         }
 
@@ -343,12 +345,14 @@ private:
         if (isVerbose && ((ncalls++) % 500) == 0) {
             printf("JackBridge#%d: FRAME %llu : Write0: %llu Read0: %llu Write1: %llu Read0: %llu\n",
                  instance, FrameNumber,
-                 *shmWriteFrameNumber[0], *shmReadFrameNumber[0],
-                 *shmWriteFrameNumber[1], *shmReadFrameNumber[1]);
+                 shmWriteFrameNumber[0]->load(std::memory_order_acquire),
+                 shmReadFrameNumber[0]->load(std::memory_order_acquire),
+                 shmWriteFrameNumber[1]->load(std::memory_order_acquire),
+                 shmReadFrameNumber[1]->load(std::memory_order_acquire));
         }
 #endif
 
-        int diff = *shmWriteFrameNumber[0] - FrameNumber;
+        int diff = shmWriteFrameNumber[0]->load(std::memory_order_acquire) - FrameNumber;
         int interval = (mach_absolute_time() - lastHostTime) / HostTicksPerFrame;
         if (showmsg) {
             if ((diff >= (STRBUFNUM/2))||(interval >= BufSize*2))  {

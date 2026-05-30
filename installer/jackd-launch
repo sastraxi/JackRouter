@@ -16,8 +16,16 @@ UID_FILE="$SUPPORT/aggregate-uid"
 JACKD="/usr/local/bin/jackd"
 JACK_LOAD="/usr/local/bin/jack_load"
 
+JACK_MIN_VERSION="1.9.22"
+
 if [ ! -x "$JACKD" ]; then
-    echo "jackd not found at $JACKD — install JACK2 from jackaudio.org" >&2
+    echo "jackd not found at $JACKD — install JACK2 ${JACK_MIN_VERSION}+ from jackaudio.org" >&2
+    exit 1
+fi
+
+ver=$("$JACKD" --version 2>&1 | head -1 | awk '{print $3}')
+if [ -n "$ver" ] && ! printf '%s\n%s\n' "$JACK_MIN_VERSION" "$ver" | sort -V -C; then
+    echo "jackd $ver too old (need ${JACK_MIN_VERSION}+). Reinstall JACK2 from jackaudio.org" >&2
     exit 1
 fi
 

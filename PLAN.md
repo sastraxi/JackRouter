@@ -56,14 +56,15 @@ Two LaunchAgents under `installer/launchagents/`: `com.jackbridge.daemon.plist` 
 
 **Goal:** no torn shm reads on arm64, clean recovery from jackd lifecycle events, defensive checks against misconfiguration.
 
-### 2.1 Deduplicate `JackBridge.h` (½ day)
-- Move IPC contract to a single header shared by both targets via Xcode workspace + shared header search path.
-- Add `protocolVersion` constant. Bump on every layout change.
+### 2.1 Deduplicate `JackBridge.h` — **DONE**
+Header moved to `shared/JackBridge.h` (git mv from `driver/JackBridge/Plug-In/JackBridge.h`; `daemon/JackBridge.h` symlink deleted). Both targets pick it up via `HEADER_SEARCH_PATHS=$(SRCROOT)/../shared` at the project level (daemon target uses `$(inherited)` to stack on top of `/usr/local/include`). Added `JACKBRIDGE_PROTOCOL_VERSION 1` — bump on every shm layout change; the refuse-on-mismatch handshake lands in 2.3. CLAUDE.md's "byte-duplicated header" note updated. No workspace was needed — both targets already live in the same `.xcodeproj`, and a workspace would just be ceremony around the single project. Both targets build clean against the new path.
 
-### 2.2 Replace `volatile` with `std::atomic` (1 day)
-- All shm sync fields: `std::atomic<uint64_t>` for frame counters, `std::atomic<uint32_t>` for status flags.
-- Publish with `memory_order_release`, read with `memory_order_acquire`.
-- Verify on Apple Silicon — write a stress test that bangs the indices from both processes and checks invariants.
+### 2.2 Replace `volatile` with `std::atomic` — **DONE**
+All shm sync fields in `JackBridgeDriverIF` now `std::atomic<uint64_t>*` (kept uint64_t storage throughout — preserves the on-disk layout, so the only contract change is sync semantics, not offsets/sizes). `attach_shm` uses `reinterpret_cast<std::atomic<uint64_t>*>` over the mmap'd region; three `static_assert`s in `shared/JackBridge.h` pin down size, alignment, and `is_always_lock_free` so a future toolchain regression breaks the build instead of silently corrupting the IPC. Daemon (~13 sites) and HAL (~11 sites) rewritten to explicit `->load(acquire)` / `->store(release)`; status-flag writes that previously assigned through both `mDriverStatus` and `*shmDriverStatus` are now split so the atomic store is unambiguous. `JACKBRIDGE_PROTOCOL_VERSION` bumped 1 → 2.
+
+Stress test: `tools/stress_atomic.cpp` — universal binary, fork-based producer/consumer over POSIX shm. Two invariants checked: torn-read detection via `(i<<32)|i` mirrored values, and acquire-release pairing via a non-atomic buffer published behind a release-store seq. 5M iterations clean on both arm64 and x86_64 (10.5M / 17M consumer reads respectively, zero violations). Build line in the header — not an Xcode target, this is a one-shot verification utility.
+
+The plan's recommendation of `uint32_t` for status flags was skipped: shrinking would force an offset re-layout for no measurable benefit on either target arch. Revisit if a future bump needs the four bytes.
 
 ### 2.3 Heartbeat + version stamp (½ day)
 - Daemon increments `daemonAlive` once per JACK process callback.
