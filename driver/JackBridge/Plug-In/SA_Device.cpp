@@ -79,7 +79,10 @@ SA_Device::SA_Device(AudioObjectID inObjectID, UInt32 instance)
 	mStartCount(0),
 	mSampleRateShadow(48000),
 	mRingBufferFrameSize(0),
-	mDriverStatus(JB_DRV_STATUS_INIT)
+	mDriverStatus(JB_DRV_STATUS_INIT),
+	mDeviceIsAlive(true),
+	mLastDaemonAlive(0),
+	mLastDaemonAliveHostTime(0)
 {
 	for(int i=0; i<kNumberOfInputSubObjects; i++)
     {
@@ -670,11 +673,11 @@ void	SA_Device::Device_GetPropertyData(AudioObjectID inObjectID, pid_t inClientP
 			break;
 
 		case kAudioDevicePropertyDeviceIsAlive:
-			//	This property returns whether or not the device is alive. Note that it is
-			//	note uncommon for a device to be dead but still momentarily availble in the
-			//	device list. In the case of this device, it will always be alive.
+			//	Reflects the daemon-heartbeat watchdog in GetZeroTimeStamp —
+			//	flips to 0 when jackd dies so the DAW disconnects cleanly
+			//	instead of getting forever-silence.
 			ThrowIf(inDataSize < sizeof(UInt32), CAException(kAudioHardwareBadPropertySizeError), "SA_Device::Device_GetPropertyData: not enough space for the return value of kAudioDevicePropertyDeviceIsAlive for the device");
-			*reinterpret_cast<UInt32*>(outData) = 1;
+			*reinterpret_cast<UInt32*>(outData) = mDeviceIsAlive.load(std::memory_order_acquire) ? 1 : 0;
 			outDataSize = sizeof(UInt32);
 			break;
 
@@ -1344,6 +1347,41 @@ void	SA_Device::GetZeroTimeStamp(Float64& outSampleTime, UInt64& outHostTime, UI
 
     //  calculate the next host time
     Float64 theHostTicksPerRingBuffer = gDevice_HostTicksPerFrame * ((Float64)mRingBufferFrameSize);
+
+    // Daemon liveness — compare the heartbeat counter against the previous
+    // sample. If it hasn't advanced within ~5 cycles of host time, declare the
+    // device dead so the DAW disconnects instead of getting forever-silence.
+    // Threshold is in host-time units, not call counts, to stay robust if the
+    // IO thread's call rate drifts.
+    uint64_t now = mach_absolute_time();
+    uint64_t curAlive = shmDaemonAlive->load(std::memory_order_acquire);
+    if (curAlive != mLastDaemonAlive) {
+        mLastDaemonAlive = curAlive;
+        mLastDaemonAliveHostTime = now;
+        if (!mDeviceIsAlive.load(std::memory_order_acquire)) {
+            mDeviceIsAlive.store(true, std::memory_order_release);
+            AudioObjectPropertyAddress addr = {
+                kAudioDevicePropertyDeviceIsAlive,
+                kAudioObjectPropertyScopeGlobal,
+                kAudioObjectPropertyElementMain
+            };
+            SA_PlugIn::Host_PropertiesChanged(GetObjectID(), 1, &addr);
+        }
+    } else if (mDeviceIsAlive.load(std::memory_order_acquire)) {
+        UInt64 threshold = (UInt64)(5.0 * theHostTicksPerRingBuffer);
+        if (now - mLastDaemonAliveHostTime > threshold) {
+            mDeviceIsAlive.store(false, std::memory_order_release);
+            syslog(LOG_ERR,
+                "JackBridge: daemon heartbeat stalled >%llu host ticks — flipping DeviceIsAlive=0",
+                (unsigned long long)threshold);
+            AudioObjectPropertyAddress addr = {
+                kAudioDevicePropertyDeviceIsAlive,
+                kAudioObjectPropertyScopeGlobal,
+                kAudioObjectPropertyElementMain
+            };
+            SA_PlugIn::Host_PropertiesChanged(GetObjectID(), 1, &addr);
+        }
+    }
     theHostTickOffset = ((Float64)(gDevice_NumberTimeStamps + 1)) * theHostTicksPerRingBuffer;
     theNextHostTime = gDevice_AnchorHostTime + ((UInt64)theHostTickOffset);
     //  go to the next time if the next host time is less than the current time
@@ -1439,10 +1477,17 @@ void	SA_Device::ReadInputData(int streamId, UInt32 inIOBufferFrameSize, Float64 
 	
 	//	do the copying (the byte sizes here assume a 16 bit stereo sample format)
     Byte* theDestination = reinterpret_cast<Byte*>(outBuffer);
-    memcpy(theDestination, RingBuffer+theStartFrameOffset*2, theNumberFramesToCopy1 * 8);
-    if(theNumberFramesToCopy2 > 0)
-    {
-        memcpy(theDestination + (theNumberFramesToCopy1 * 8), RingBuffer, theNumberFramesToCopy2 * 8);
+    if (!mDeviceIsAlive.load(std::memory_order_acquire)) {
+        // Daemon stalled — feed silence to the DAW instead of stale ring-buffer
+        // contents. DeviceIsAlive=0 has been published; the host should be
+        // tearing the device down imminently.
+        bzero(theDestination, inIOBufferFrameSize * 8);
+    } else {
+        memcpy(theDestination, RingBuffer+theStartFrameOffset*2, theNumberFramesToCopy1 * 8);
+        if(theNumberFramesToCopy2 > 0)
+        {
+            memcpy(theDestination + (theNumberFramesToCopy1 * 8), RingBuffer, theNumberFramesToCopy2 * 8);
+        }
     }
     frameNum->store(static_cast<UInt64>(inSampleTime) + inIOBufferFrameSize,
                     std::memory_order_release);
@@ -1502,6 +1547,17 @@ void	SA_Device::_HW_Open()
         Throw(CAException(kAudioHardwareBadDeviceError));
         return;
     }
+
+    if (!check_protocol_version()) {
+        syslog(LOG_ERR,
+            "JackBridge: shm protocol version mismatch — observed %llu, driver built for %d. "
+            "Reinstall the matching .pkg.",
+            (unsigned long long)shmProtocolVersion->load(std::memory_order_acquire),
+            JACKBRIDGE_PROTOCOL_VERSION);
+        Throw(CAException(kAudioHardwareBadDeviceError));
+        return;
+    }
+
     shmSeed->store(1, std::memory_order_relaxed);
     shmSyncMode->store(0, std::memory_order_relaxed);
     mDriverStatus = JB_DRV_STATUS_ACTIVE;
@@ -1526,6 +1582,14 @@ kern_return_t	SA_Device::_HW_StartIO()
     mDriverStatus = JB_DRV_STATUS_STARTED;
     shmDriverStatus->store(JB_DRV_STATUS_STARTED, std::memory_order_release);
     gDevice_AnchorHostTime = 0;
+
+    // Re-arm heartbeat tracking. If the daemon's already ticking, this primes
+    // mLastDaemonAlive to a recent value so we don't false-positive on the
+    // first GetZeroTimeStamp; if it isn't, the staleness threshold gives it
+    // ~5 cycles to come up before we mark the device dead.
+    mLastDaemonAlive = shmDaemonAlive->load(std::memory_order_acquire);
+    mLastDaemonAliveHostTime = mach_absolute_time();
+    mDeviceIsAlive.store(true, std::memory_order_release);
     return 0;
 }
 

@@ -51,6 +51,15 @@ public:
             exit(1);
         }
 
+        if (!check_protocol_version()) {
+            fprintf(stderr,
+                "JackBridge: shm protocol version mismatch — driver published %llu, "
+                "daemon built for %d. Reinstall the matching .pkg.\n",
+                (unsigned long long)shmProtocolVersion->load(std::memory_order_acquire),
+                JACKBRIDGE_PROTOCOL_VERSION);
+            exit(1);
+        }
+
         isActive = false;
         isSyncMode = true; // FIXME: should be parameterized
         isVerbose = (getenv("JACKBRIDGE_DEBUG")) ? true : false;
@@ -89,6 +98,12 @@ public:
     int process_callback(jack_nframes_t nframes) override {
         sample_t *ain[NUM_INPUT_CHANNELS];
         sample_t *aout[NUM_OUTPUT_CHANNELS];
+
+        // Heartbeat — HAL watches this counter; if it stops advancing the HAL
+        // flips DeviceIsAlive=0 so the DAW disconnects instead of getting
+        // forever-silence. relaxed is fine: the staleness check only cares
+        // that the value moves, not what the value is.
+        shmDaemonAlive->fetch_add(1, std::memory_order_relaxed);
 
 #ifdef _WITH_MIDI_BRIDGE_
         process_midi_message(nframes);

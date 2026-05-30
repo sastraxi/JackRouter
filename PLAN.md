@@ -66,10 +66,8 @@ Stress test: `tools/stress_atomic.cpp` — universal binary, fork-based producer
 
 The plan's recommendation of `uint32_t` for status flags was skipped: shrinking would force an offset re-layout for no measurable benefit on either target arch. Revisit if a future bump needs the four bytes.
 
-### 2.3 Heartbeat + version stamp (½ day)
-- Daemon increments `daemonAlive` once per JACK process callback.
-- HAL checks staleness in its IO proc (compare against host time at last update). If stale > 5 cycles, return silence and set `kAudioDevicePropertyDeviceIsAlive = 0`.
-- Both sides refuse to attach if `protocolVersion` mismatches. Loud log, clean exit.
+### 2.3 Heartbeat + version stamp — **DONE**
+New shm fields at offsets 0x130 (`shmProtocolVersion`) and 0x138 (`shmDaemonAlive`); `JACKBRIDGE_PROTOCOL_VERSION` bumped 2 → 3. Version handshake centralized as `JackBridgeDriverIF::check_protocol_version()` — first-attacher writes, second validates; on mismatch both sides log loudly and exit (daemon `exit(1)`, HAL throws `kAudioHardwareBadDeviceError` from `_HW_Open`). Daemon `process_callback` ticks `shmDaemonAlive` with relaxed `fetch_add`. HAL tracks last-seen counter + host time in `mLastDaemonAlive` / `mLastDaemonAliveHostTime`; `GetZeroTimeStamp` flips `mDeviceIsAlive` (std::atomic<bool>) to false once `now - lastChange > 5 * HostTicksPerRingBuffer` and fires `Host_PropertiesChanged` for `kAudioDevicePropertyDeviceIsAlive` so the DAW disconnects rather than hanging on stale-buffer silence. The property getter now reads `mDeviceIsAlive` instead of hardcoded `1`; `ReadInputData` zeroes the destination when dead. Re-arm on `_HW_StartIO` so a daemon restart recovers without unloading the device. Built clean Debug both arches; runtime soak gates on hardware in 2.8.
 
 ### 2.4 `jack_on_shutdown` + signal handling (1 day)
 - Uncomment / re-implement `jack_on_shutdown` registration in `daemon/jackClient.cpp:132`.

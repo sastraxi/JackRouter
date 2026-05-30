@@ -41,7 +41,7 @@
 // IPC contract version. Bump on every shm layout change (sizes, offsets, field
 // types, sync semantics). Phase 2.3 wires the handshake — daemon and HAL both
 // refuse to attach on mismatch.
-#define JACKBRIDGE_PROTOCOL_VERSION 2
+#define JACKBRIDGE_PROTOCOL_VERSION 3
 
 // shm sync fields are std::atomic<uint64_t> placed by reinterpret_cast over the
 // mapped region. Both targets must agree that the type is lock-free and the
@@ -71,6 +71,8 @@ static_assert(std::atomic<uint64_t>::is_always_lock_free,
 // 0x0118      :    SyncMode
 // 0x0120      :    RingBufferSize
 // 0x0128      :    Driver status
+// 0x0130      :    Protocol version (handshake — refuse-on-mismatch)
+// 0x0138      :    Daemon alive heartbeat counter
 // 0x0180      :    Current Frame Number(coreAudio read)
 // 0x0188      :    Current Frame Number(coreAudio write)
 // 0x0190      :    Current Frame Number(coreAudio read)
@@ -122,6 +124,8 @@ protected:
 #define JB_DRV_STATUS_INIT      0
 #define JB_DRV_STATUS_ACTIVE    1
 #define JB_DRV_STATUS_STARTED   2
+    std::atomic<uint64_t> *shmProtocolVersion;
+    std::atomic<uint64_t> *shmDaemonAlive;
     std::atomic<uint64_t> *shmReadFrameNumber[MAX_STREAMS];
     std::atomic<uint64_t> *shmWriteFrameNumber[MAX_STREAMS];
 
@@ -191,6 +195,8 @@ protected:
         shmSyncMode = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+0x118);
         shmBufferSize = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+0x120);
         shmDriverStatus = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+0x128);
+        shmProtocolVersion = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+0x130);
+        shmDaemonAlive = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+0x138);
 
         for(int i=0; i<MAX_STREAMS; i++) {
             buf_up[i]   = (sample_t*)(shm_base + STRBUF_UP(i));
@@ -202,6 +208,22 @@ protected:
         return 0;
     }
     
+    // Cooperative version handshake. Whichever side attaches to a fresh shm
+    // first publishes its version; the second side validates. Returns true on
+    // match (or first-writer), false on mismatch — caller should log + exit.
+    // The race window between the two CAS-like reads is benign: both sides
+    // are pinned to the same JACKBRIDGE_PROTOCOL_VERSION at build time, so any
+    // disagreement implies a stale shm from a previous install.
+    bool check_protocol_version() {
+        uint64_t observed = shmProtocolVersion->load(std::memory_order_acquire);
+        if (observed == 0) {
+            shmProtocolVersion->store(JACKBRIDGE_PROTOCOL_VERSION,
+                                      std::memory_order_release);
+            return true;
+        }
+        return observed == JACKBRIDGE_PROTOCOL_VERSION;
+    }
+
 public:
     JackBridgeDriverIF(uint32_t _instance) : instance(_instance) {
     }

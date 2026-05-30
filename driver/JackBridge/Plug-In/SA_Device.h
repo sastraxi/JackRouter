@@ -178,6 +178,13 @@ private:
 	UInt64						mSampleRateShadow;
 	UInt32						mRingBufferFrameSize;
 	UInt32                  	mDriverStatus;
+
+	// Daemon liveness — see SA_Device.cpp:GetZeroTimeStamp for the staleness
+	// check. mDeviceIsAlive is atomic because Device_GetPropertyData reads it
+	// from arbitrary client threads while the IO thread writes it.
+	std::atomic<bool>			mDeviceIsAlive;
+	uint64_t					mLastDaemonAlive;
+	uint64_t					mLastDaemonAliveHostTime;
 	
 	AudioObjectID				mInputStreamObjectID[NUM_INPUT_STREAMS];
 	bool						mInputStreamIsActive[NUM_INPUT_STREAMS];
