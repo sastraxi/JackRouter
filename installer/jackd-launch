@@ -2,17 +2,20 @@
 # jackd-launch — start jackd with the JackBridge clock topology, then load
 # netmanager once the server is up.
 #
-# Clock device: aggregate UID written by Phase 3.1's first-run helper into
-# /Library/Application Support/JackBridge/aggregate-uid. If the file is absent
-# we let jackd pick the system default — Phase 1 smoke-test fallback only; not
-# the supported production path. See docs/architecture.md.
+# Clock device selection:
+#   1. config.plist ClockDeviceUID, if set.
+#   2. Otherwise, jb-detect-builtin auto-detects the Mac's built-in output.
+#   3. If neither yields a UID, refuse to start (loud log, non-zero exit;
+#      LaunchAgent KeepAlive backs off).
 #
-# `-P 75` is load-bearing — see docs/spike-b-clock-stability.md.
+# Single-clock-domain is load-bearing — see docs/architecture.md. `-P 75` is
+# load-bearing — see docs/spike-b-clock-stability.md.
 
 set -e
 
 SUPPORT="/Library/Application Support/JackBridge"
-UID_FILE="$SUPPORT/aggregate-uid"
+CONFIG="$SUPPORT/config.plist"
+DETECT="$SUPPORT/jb-detect-builtin"
 JACKD="/usr/local/bin/jackd"
 JACK_LOAD="/usr/local/bin/jack_load"
 
@@ -29,12 +32,27 @@ if [ -n "$ver" ] && ! printf '%s\n%s\n' "$JACK_MIN_VERSION" "$ver" | sort -V -C;
     exit 1
 fi
 
-DEVICE_ARGS=""
-if [ -f "$UID_FILE" ]; then
-    DEVICE_ARGS="-d ~:$(cat "$UID_FILE")"
+# Read ClockDeviceUID from config.plist; empty string and missing key both
+# return empty, both of which fall through to auto-detect.
+CLOCK_UID=""
+if [ -f "$CONFIG" ]; then
+    CLOCK_UID=$(/usr/libexec/PlistBuddy -c "Print :ClockDeviceUID" "$CONFIG" 2>/dev/null || true)
 fi
 
-"$JACKD" -R -P 75 -d coreaudio $DEVICE_ARGS -r 48000 -p 128 &
+if [ -z "$CLOCK_UID" ]; then
+    if [ ! -x "$DETECT" ]; then
+        echo "ClockDeviceUID unset in $CONFIG and $DETECT missing — cannot determine jackd backend device." >&2
+        exit 1
+    fi
+    CLOCK_UID=$("$DETECT") || {
+        echo "jb-detect-builtin failed to find a built-in audio device. Set ClockDeviceUID in $CONFIG explicitly." >&2
+        exit 1
+    }
+fi
+
+echo "jackd-launch: using ClockDeviceUID=$CLOCK_UID" >&2
+
+"$JACKD" -R -P 75 -d coreaudio -d "~:$CLOCK_UID" -r 48000 -p 128 &
 JACKD_PID=$!
 
 # Wait for jackd to be ready (jack_lsp succeeds once the server is up).

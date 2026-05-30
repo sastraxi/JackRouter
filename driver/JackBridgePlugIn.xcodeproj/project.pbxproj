@@ -42,6 +42,9 @@
 		DA0000000000000000000014 /* CoreFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 2D7477AC1578168D00412279 /* CoreFoundation.framework */; };
 		DA0000000000000000000015 /* CoreMIDI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = DA0000000000000000000005 /* CoreMIDI.framework */; };
 		DA0000000000000000000016 /* libjack.0.dylib in Frameworks */ = {isa = PBXBuildFile; fileRef = DA0000000000000000000006 /* libjack.0.dylib */; };
+		DB0000000000000000000011 /* jb-detect-builtin.c in Sources */ = {isa = PBXBuildFile; fileRef = DB0000000000000000000001 /* jb-detect-builtin.c */; };
+		DB0000000000000000000013 /* CoreAudio.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 2D7477EC157823CF00412279 /* CoreAudio.framework */; };
+		DB0000000000000000000014 /* CoreFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 2D7477AC1578168D00412279 /* CoreFoundation.framework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -85,6 +88,8 @@
 		DA0000000000000000000006 /* libjack.0.dylib */ = {isa = PBXFileReference; lastKnownFileType = "compiled.mach-o.dylib"; name = libjack.0.dylib; path = "$(JACK_PREFIX)/lib/libjack.0.dylib"; sourceTree = "<absolute>"; };
 		DA0000000000000000000007 /* JackBridged */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = JackBridged; sourceTree = BUILT_PRODUCTS_DIR; };
 		DA0000000000000000000008 /* daemon.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = daemon.entitlements; sourceTree = "<group>"; };
+		DB0000000000000000000001 /* jb-detect-builtin.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; name = "jb-detect-builtin.c"; path = "../installer/jb-detect-builtin.c"; sourceTree = SOURCE_ROOT; };
+		DB0000000000000000000007 /* jb-detect-builtin */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = "jb-detect-builtin"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -107,6 +112,15 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		DB0000000000000000000031 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				DB0000000000000000000013 /* CoreAudio.framework in Frameworks */,
+				DB0000000000000000000014 /* CoreFoundation.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -117,6 +131,7 @@
 				2DED182215C356BA0091BE97 /* JackBridge */,
 				2DD7AA0D15EAFD3300C67AE1 /* PublicUtility */,
 				DA0000000000000000000020 /* daemon */,
+				DB0000000000000000000020 /* installer */,
 				2D7477AB1578168D00412279 /* Frameworks */,
 				2D7477AA1578168D00412279 /* Products */,
 			);
@@ -127,6 +142,7 @@
 			children = (
 				2D76D96015E48B2000FF0F33 /* JackBridgePlugIn.driver */,
 				DA0000000000000000000007 /* JackBridged */,
+				DB0000000000000000000007 /* jb-detect-builtin */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -213,6 +229,14 @@
 			path = ../daemon;
 			sourceTree = "<group>";
 		};
+		DB0000000000000000000020 /* installer */ = {
+			isa = PBXGroup;
+			children = (
+				DB0000000000000000000001 /* jb-detect-builtin.c */,
+			);
+			name = installer;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXHeadersBuildPhase section */
@@ -275,6 +299,22 @@
 			productReference = DA0000000000000000000007 /* JackBridged */;
 			productType = "com.apple.product-type.tool";
 		};
+		DB0000000000000000000040 /* jb-detect-builtin */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = DB0000000000000000000060 /* Build configuration list for PBXNativeTarget "jb-detect-builtin" */;
+			buildPhases = (
+				DB0000000000000000000030 /* Sources */,
+				DB0000000000000000000031 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = "jb-detect-builtin";
+			productName = "jb-detect-builtin";
+			productReference = DB0000000000000000000007 /* jb-detect-builtin */;
+			productType = "com.apple.product-type.tool";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -298,6 +338,7 @@
 			targets = (
 				2D76D95F15E48B2000FF0F33 /* JackBridgePlugIn */,
 				DA0000000000000000000040 /* JackBridged */,
+				DB0000000000000000000040 /* jb-detect-builtin */,
 			);
 		};
 /* End PBXProject section */
@@ -339,6 +380,14 @@
 			files = (
 				DA0000000000000000000011 /* JackBridge.cpp in Sources */,
 				DA0000000000000000000012 /* jackClient.cpp in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		DB0000000000000000000030 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				DB0000000000000000000011 /* jb-detect-builtin.c in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -586,6 +635,33 @@
 			};
 			name = "Debug-Opt";
 		};
+		DB0000000000000000000050 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				INSTALL_PATH = "/Library/Application Support/JackBridge";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.jackbridge.jb-detect-builtin";
+				PRODUCT_NAME = "jb-detect-builtin";
+			};
+			name = Release;
+		};
+		DB0000000000000000000051 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				INSTALL_PATH = "/Library/Application Support/JackBridge";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.jackbridge.jb-detect-builtin";
+				PRODUCT_NAME = "jb-detect-builtin";
+			};
+			name = Debug;
+		};
+		DB0000000000000000000052 /* Debug-Opt */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				INSTALL_PATH = "/Library/Application Support/JackBridge";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.jackbridge.jb-detect-builtin";
+				PRODUCT_NAME = "jb-detect-builtin";
+			};
+			name = "Debug-Opt";
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -615,6 +691,16 @@
 				DA0000000000000000000050 /* Release */,
 				DA0000000000000000000051 /* Debug */,
 				DA0000000000000000000052 /* Debug-Opt */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		DB0000000000000000000060 /* Build configuration list for PBXNativeTarget "jb-detect-builtin" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				DB0000000000000000000050 /* Release */,
+				DB0000000000000000000051 /* Debug */,
+				DB0000000000000000000052 /* Debug-Opt */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

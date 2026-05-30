@@ -64,12 +64,14 @@ if [[ -n "${SIGN_APP_IDENTITY:-}" ]]; then
     XCBUILD_ARGS+=(CODE_SIGN_IDENTITY="$SIGN_APP_IDENTITY" CODE_SIGN_STYLE=Manual OTHER_CODE_SIGN_FLAGS="--timestamp")
 fi
 
-echo "==> Building driver + daemon"
+echo "==> Building driver + daemon + helpers"
 xcodebuild "${XCBUILD_ARGS[@]}" -target JackBridgePlugIn clean build >/dev/null
 xcodebuild "${XCBUILD_ARGS[@]}" -target JackBridged build >/dev/null
+xcodebuild "${XCBUILD_ARGS[@]}" -target jb-detect-builtin build >/dev/null
 
 cp -R "$BUILD/xcode/JackBridgePlugIn.driver" "$STAGING/Library/Audio/Plug-Ins/HAL/"
 cp    "$BUILD/xcode/JackBridged"             "$STAGING/Library/Application Support/JackBridge/"
+cp    "$BUILD/xcode/jb-detect-builtin"       "$STAGING/Library/Application Support/JackBridge/"
 install -m 0755 "$INSTALLER/jackd-launch"    "$STAGING/Library/Application Support/JackBridge/jackd-launch"
 install -m 0644 "$INSTALLER/config.plist"     "$STAGING/Library/Application Support/JackBridge/config.plist"
 install -m 0644 "$INSTALLER/launchagents/com.jackbridge.daemon.plist" "$STAGING/Library/LaunchAgents/"

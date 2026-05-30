@@ -5,7 +5,7 @@ Production-ready macOS JACK ↔ CoreAudio bridge, targeting Sequoia 15.x / Tahoe
 This plan assumes the architectural decisions in `docs/architecture.md`:
 - Fork of `madhatter68/JackRouter` (not `jackaudio/jack-router`).
 - Two-process design (daemon + AudioServerPlugIn HAL) via POSIX shm.
-- **Config B clock topology**: jackd on Mac uses CoreAudio backend (aggregate device as clock source); netJACK2 runs as a JACK client inside jackd and handles Pi↔Mac clock crossing itself. JackBridge sees one clock domain. **No SRC in JackBridge.**
+- **Config B clock topology**: jackd on Mac uses CoreAudio backend pinned to a stable hardware device (built-in output by default); netJACK2 runs as a JACK client inside jackd and handles Pi↔Mac clock crossing itself. JackBridge sees one clock domain. **No SRC in JackBridge.**
 - Scope: 2-in / 4-out @ 48 kHz. Stereo wet return + stereo DI send is exactly the pi-stomp use case.
 
 ## Spikes (do first, ~1 day total)
@@ -40,7 +40,7 @@ Universal `.driver` (arm64 + x86_64) builds clean under Xcode 26.3 / SDK 26.2 wi
 `installer/build-pkg.sh` orchestrates `xcodebuild` (both targets, Release) → staging → `pkgbuild` → `productbuild` → optional `notarytool submit --wait` + `stapler staple`. Distribution xml lives at `installer/distribution.xml.in` (versioned via `@VERSION@` substitution; pins min macOS 13.0, arm64+x86_64). Postinstall script is `installer/scripts/postinstall` — currently just `killall coreaudiod`; LaunchAgent registration lands in 1.5 alongside the plists themselves. Local smoke produces `installer/build/JackBridge-<ver>.pkg` with driver at `/Library/Audio/Plug-Ins/HAL/JackBridgePlugIn.driver` and daemon at `/Library/Application Support/JackBridge/JackBridged`; signing/notarization gate on `SIGN_APP_IDENTITY` / `SIGN_INSTALLER_IDENTITY` / `NOTARY_PROFILE` env vars so the same script serves dev and release. A dummy notarized submission (per the riskiest-unknowns note) still needs to be run once a Developer ID cert is in hand.
 
 ### 1.5 LaunchAgent plists — **DONE**
-Two LaunchAgents under `installer/launchagents/`: `com.jackbridge.daemon.plist` runs `JackBridged`; `com.jackbridge.jackd.plist` runs `jackd-launch`. Both are `LimitLoadToSessionType=Aqua`, `KeepAlive`, `RunAtLoad`, `ProcessType=Interactive`; logs to `/tmp/<label>.{out,err}.log` for now (3.3 swaps in `os_log`). `installer/jackd-launch` wraps `jackd -R -P 75 -d coreaudio [-d ~:<aggregate-uid>] -r 48000 -p 128` then `jack_load netmanager` — reads `/Library/Application Support/JackBridge/aggregate-uid` when present, falls back to jackd's default device picker when not (3.1 writes the UID file at first-run). `build-pkg.sh` now stages the plists into `/Library/LaunchAgents/` and the wrapper alongside the daemon binary. Postinstall does the usual `killall coreaudiod` then bootstraps both labels into the active GUI user's session via `launchctl bootstrap gui/<uid>` so install-time activation doesn't require a logout cycle; the `Aqua` session-type constraint still gates auto-load for subsequent logins. `plutil -lint` clean on both plists.
+Two LaunchAgents under `installer/launchagents/`: `com.jackbridge.daemon.plist` runs `JackBridged`; `com.jackbridge.jackd.plist` runs `jackd-launch`. Both are `LimitLoadToSessionType=Aqua`, `KeepAlive`, `RunAtLoad`, `ProcessType=Interactive`; logs to `/tmp/<label>.{out,err}.log` for now (3.3 swaps in `os_log`). `installer/jackd-launch` wraps `jackd -R -P 75 -d coreaudio -d ~:<ClockDeviceUID> -r 48000 -p 128` then `jack_load netmanager` — reads `ClockDeviceUID` from `config.plist`, auto-detects via `jb-detect-builtin` when unset (Phase 3.1). `build-pkg.sh` now stages the plists into `/Library/LaunchAgents/` and the wrapper alongside the daemon binary. Postinstall does the usual `killall coreaudiod` then bootstraps both labels into the active GUI user's session via `launchctl bootstrap gui/<uid>` so install-time activation doesn't require a logout cycle; the `Aqua` session-type constraint still gates auto-load for subsequent logins. `plutil -lint` clean on both plists.
 
 ### 1.6 Smoke test (½ day)
 - Clean macOS install. Install `.pkg`. Reboot. Confirm:
@@ -76,9 +76,9 @@ New shm fields at offsets 0x130 (`shmProtocolVersion`) and 0x138 (`shmDaemonAliv
 - On daemon startup, query the jackd we connected to: confirm it's running on a CoreAudio backend (not `net`). If not, refuse to start with a clear error referencing `docs/macos-setup.md`.
 - Implementation: `jack_get_driver_name()` or equivalent; if it's `net`, log and exit non-zero.
 
-### 2.6 Aggregate-device feedback-loop check (½ day)
-- Enumerate the aggregate jackd is bound to via `kAudioAggregateDevicePropertyActiveSubDeviceList`.
-- If JackBridge's own UID is in the list, refuse to start. User has misconfigured. Loud log.
+### 2.6 Clock-device feedback-loop check (½ day)
+- On daemon startup, look up jackd's CoreAudio backend device. If its UID equals JackBridge's own device UID (user pointed `ClockDeviceUID` at us, directly or via an aggregate that includes us), refuse to start. Loud log.
+- For aggregates: enumerate `kAudioAggregateDevicePropertyActiveSubDeviceList` and reject if JackBridge appears as a sub-device.
 
 ### 2.7 Loud failure on `jack_client_open` — **PARTIAL (silent-return fixed; broader audit deferred)**
 `JackClient` ctor now logs the jackd status word + a pointer to `docs/macos-setup.md` and `exit(1)` instead of returning with `client == nullptr` and letting the next jack_* call segfault. The broader return-code audit across CoreAudio / JACK calls is still owed — folded into 2.5/2.6 for the jackd-side checks and otherwise into Phase 3 polish.
@@ -96,10 +96,14 @@ New shm fields at offsets 0x130 (`shmProtocolVersion`) and 0x138 (`shmDaemonAliv
 
 **Goal:** shippable. End-user friendly install, sensible defaults, good diagnostics.
 
-### 3.1 Aggregate device creation in installer (1 day)
-- Postinstall script (or daemon first-run) calls `AudioHardwareCreateAggregateDevice` with `{built-in output}` as sub-device, named "JackBridge Clock," persists UID to `/Library/Application Support/JackBridge/aggregate-uid`.
-- `jackd-launch` reads that UID, passes to `jackd -d coreaudio -d ~:<uid>`.
-- Re-create on demand if the user deletes it from Audio MIDI Setup.
+### 3.1 Clock-device auto-detection — **DONE**
+Scope simplified vs original plan: dropped the aggregate-device wrapper. Adding a CoreAudio aggregate over built-in output had no measurable clock-stability gain (built-in device UIDs are already stable across reboots) and introduced a phantom `"JackBridge Clock"` device in every DAW's picker. Direct device UID with PlistBuddy-overridable config is simpler and has no UX wart.
+
+`installer/jb-detect-builtin.c` is a small C tool (~100 lines) that enumerates `kAudioHardwarePropertyDevices`, filters for transport-type `BuiltIn` with output streams, and prints the first match's UID to stdout. New Xcode target in `JackBridgePlugIn.xcodeproj` builds it as a universal Mach-O with hardened runtime; `build-pkg.sh` stages it to `/Library/Application Support/JackBridge/jb-detect-builtin`.
+
+`jackd-launch` reads `ClockDeviceUID` from `/Library/Application Support/JackBridge/config.plist` via PlistBuddy. Empty (default) → invoke the helper; non-empty → use as-is. If both fail, log loudly and exit non-zero (LaunchAgent KeepAlive retries with backoff). The legacy `aggregate-uid` file path is gone.
+
+Headless Macs with no built-in audio (Mac mini / Studio with only HDMI) must set `ClockDeviceUID` explicitly — documented in `config.plist` comments and `docs/macos-setup.md`.
 
 ### 3.2 Meaningful channel labels (¼ day) -- *SKIPPED*
 
@@ -114,8 +118,7 @@ Default `config.plist` is staged to `/Library/Application Support/JackBridge/con
 - Defaults live in code, not in the installed file. The installed file is purely a template the user can edit; deleting it must still produce a working system on next restart.
 
 ### 3.4.2 jackd-launch consumption (¼ day)
-- Read `SampleRate`, `PeriodFrames`, `RealtimePriority`, `AggregateDeviceUID`, `NetJack:MTU` via PlistBuddy.
-- `AggregateDeviceUID` from config takes precedence over the legacy `aggregate-uid` file (Phase 3.1 helper migrates the file's contents into the plist on first run, then deletes it).
+- Read `SampleRate`, `PeriodFrames`, `RealtimePriority`, `ClockDeviceUID`, `NetJack:MTU` via PlistBuddy. (`ClockDeviceUID` wiring landed in 3.1.)
 - `RealtimePriority < 75` logs a warning citing Spike B before honoring it.
 - MTU passes through to `jack_load netmanager -i "--mtu <n>"`.
 
@@ -126,7 +129,7 @@ Default `config.plist` is staged to `/Library/Application Support/JackBridge/con
 
 ### 3.4.4 Upgrade safety (¼ day)
 - pkg currently overwrites `config.plist` on upgrade, which would clobber user edits. Move the file out of the component payload and have `postinstall` write it only if absent (`[ -f "$DEST" ] || install ...`). Bundle the default as a sibling `config.plist.default` for diffing.
-- Migration: if `aggregate-uid` exists and the plist's `AggregateDeviceUID` is empty, fold the file contents into the plist and remove the file. Idempotent.
+- No migration owed: the `aggregate-uid` file never shipped in a released build (Phase 3.1 reframed before that landed).
 
 ### 3.5 Delete dead code — **DONE**
 `libs/`, `driver/ReadMe.txt`, and the unused PublicUtility files (`CADebugger`, `CAGuard`, `CAVolumeCurve`) all deleted. README's `JackBridge` branch reference fixed. `tools/rmshm.c` already targets `/JackBridge`; the additional `/jackrouter` + `/jackrouter2` unlinks are intentional upgrade cleanup for users coming from upstream `madhatter68/JackRouter` — CLAUDE.md updated to reflect that it's a feature, not vestigial.

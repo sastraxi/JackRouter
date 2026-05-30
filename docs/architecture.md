@@ -50,7 +50,7 @@ Mac CoreAudio clock ─► HAL IO proc ─► driver ────────►
 netJACK2 master client (inside jackd) ─► adaptive SRC ─► network ─► Pi
 ```
 
-Mac jackd is driven by a CoreAudio device (an aggregate device containing the Mac's built-in output as clock source — see `macos-setup.md`). netJACK2 runs as a JACK *client* in jackd and does its own adaptive resampling at the network boundary. That's the whole reason netJACK2 exists vs netJACK1 — it solved this problem in 2011 and has been in production ever since.
+Mac jackd is driven by a CoreAudio device (the Mac's built-in output by default; overridable via `ClockDeviceUID` in `config.plist` — see `macos-setup.md`). netJACK2 runs as a JACK *client* in jackd and does its own adaptive resampling at the network boundary. That's the whole reason netJACK2 exists vs netJACK1 — it solved this problem in 2011 and has been in production ever since.
 
 JackBridge sees both sides on the **same CoreAudio host clock**. No SRC, no PI controller. Ring buffers absorb buffer-size mismatch between JACK's period and CoreAudio's IO buffer, nothing more.
 

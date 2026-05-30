@@ -25,25 +25,22 @@ The user-facing runtime setup. What gets installed where, what processes run, ho
 
 LaunchAgents in `/Library/LaunchAgents/` are instantiated per-user-session. Each plist sets `LimitLoadToSessionType = Aqua` so they only run for GUI sessions (not SSH, not loginwindow). `coreaudiod` is per-session — system-wide LaunchDaemons (uid 0, no Aqua) cannot wire up to it cleanly, which is why we don't use them.
 
-## Why an aggregate device?
+## Clock-device selection
 
-`jackd -d coreaudio` requires a CoreAudio device to drive its cycle. We want this device to be:
+`jackd -d coreaudio` requires a CoreAudio device to drive its cycle. The choice is load-bearing (see `architecture.md` — single-clock-domain) and we want it:
 
 1. **Always present** (so jackd starts reliably without depending on user hardware).
 2. **Stable in clock** (so jackd's cycle doesn't jitter).
 3. **Independent of whatever device the DAW selects** (no circular dependency).
-4. **Independent of what JackBridge presents** (no feedback loop).
+4. **Independent of what JackBridge presents** (no feedback loop — JackBridge as jackd's backend is the silence/runaway condition documented in `idiosyncrasies.md`).
 
-An aggregate device containing just the Mac's built-in output meets all four. The aggregate is created programmatically by the installer (or daemon's first-run helper) via `AudioHardwareCreateAggregateDevice` — no need to script Audio MIDI Setup. The aggregate's UID is persisted and passed to `jackd -d coreaudio -d ~:<uid>`.
+The built-in audio output meets all four on any Mac that has it. `jackd-launch` reads `ClockDeviceUID` from `/Library/Application Support/JackBridge/config.plist`; when empty, the `jb-detect-builtin` helper (installed alongside the daemon) enumerates CoreAudio devices, filters for transport-type `BuiltIn` with output streams, and prints the first match's UID. Headless Macs (Mac mini / Studio with no built-in codec) must set `ClockDeviceUID` explicitly — enumerate available UIDs with `system_profiler SPAudioDataType` or `jackd -d coreaudio -l`.
 
-**Do not include JackBridge in the aggregate.** See `idiosyncrasies.md` — CoreAudio does not detect the cycle; you get silence or runaway.
+We don't use a CoreAudio aggregate wrapper around the built-in: it would add a phantom "JackBridge Clock" device to every DAW's picker for no clock-stability gain (built-in UIDs are stable across reboots). UID-based lookup via `~:<uid>` is what bypasses Spike B's friendly-name-fallback bug; the indirection wasn't buying us that.
 
 ## Bringing the system up (post-install)
 
 ```bash
-# Aggregate device created at install time, UID written to:
-#   /Library/Application Support/JackBridge/aggregate-uid
-
 # LaunchAgents start automatically at user login. Manual control:
 launchctl load   ~/Library/LaunchAgents/com.jackbridge.jackd.plist
 launchctl load   ~/Library/LaunchAgents/com.jackbridge.daemon.plist
@@ -53,7 +50,7 @@ launchctl unload ~/Library/LaunchAgents/com.jackbridge.jackd.plist
 
 The `jackd-launch` wrapper script invokes:
 ```
-jackd -R -P 75 -d coreaudio -d ~:$(cat aggregate-uid) -r 48000 -p 128
+jackd -R -P 75 -d coreaudio -d ~:<ClockDeviceUID> -r 48000 -p 128
 ```
 then `jack_load netmanager` once jackd is responsive (netJACK2 master client).
 

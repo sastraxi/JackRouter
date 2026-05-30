@@ -17,10 +17,17 @@
 <dict>
     <!-- Clock topology. Changes force a jackd restart. -->
 
-    <!-- UID of the aggregate device jackd binds as its CoreAudio backend.
-         Written by the first-run helper (Phase 3.1). Empty = let jackd pick
-         the system default device (smoke-test fallback, not supported). -->
-    <key>AggregateDeviceUID</key>
+    <!-- CoreAudio UID of the device jackd binds as its backend. This device's
+         hardware sample clock paces the entire JackBridge pipeline (see
+         docs/architecture.md — single-clock-domain is load-bearing).
+
+         Empty (default) = auto-detect the Mac's built-in audio output via
+         the jb-detect-builtin helper. Set explicitly to override (e.g. on a
+         headless Mac mini with no built-in audio, or to clock off a stable
+         external interface like a UR22C). Enumerate UIDs with:
+             system_profiler SPAudioDataType
+         or check `jackd -d coreaudio -l` output. -->
+    <key>ClockDeviceUID</key>
     <string></string>
 
     <key>SampleRate</key>
