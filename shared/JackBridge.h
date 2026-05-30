@@ -37,6 +37,7 @@
 #include <stdint.h>
 #include <atomic>
 #include <mach/mach_time.h>
+#include "jb_log.hpp"
 
 // IPC contract version. Bump on every shm layout change (sizes, offsets, field
 // types, sync semantics). Phase 2.3 wires the handshake — daemon and HAL both
@@ -101,12 +102,6 @@ typedef float sample_t;
 
 #define JACK_SHMPATH        "/JackBridge"
 
-#ifdef _ERROR_SYSLOG_
-#define ERROR(pri, str, code) syslog(pri, str, code);
-#else
-#define ERROR(pri, str, code) fprintf(stderr, str, code);
-#endif
-
 class JackBridgeDriverIF {
 protected:
     uint32_t instance;
@@ -131,34 +126,34 @@ protected:
 
     int create_shm() {
         struct stat stat;
-        ERROR(LOG_INFO, "JackBridge: Initializing shared memory to communicate with jack(%d).", 0);
+        JB_LOG_INFO(jb_log_shm(), "JackBridge: Initializing shared memory to communicate with jack(%d).", 0);
         shm_fd = shm_open(JACK_SHMPATH, O_CREAT|O_RDWR, S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH|S_IWOTH);
         if (shm_fd < 0) {
-            ERROR(LOG_ERR, "shm cannot be opened with %s.\n", strerror(errno));
+            JB_LOG_ERR(jb_log_shm(), "shm cannot be opened with %{public}s.", strerror(errno));
             return -1;
         }
         
         if (fstat(shm_fd, &stat) < 0) {
-            ERROR(LOG_ERR, "Couldn't get shm stat with %s.\n", strerror(errno));
+            JB_LOG_ERR(jb_log_shm(), "Couldn't get shm stat with %{public}s.", strerror(errno));
             close(shm_fd);
             return -1;
         }
         
         if (stat.st_size != JACK_SHMSIZE) {
             if (ftruncate(shm_fd, JACK_SHMSIZE) == -1) {
-                ERROR(LOG_INFO, "shm cannot be truncated with %s. Try to recreate shm.\n", strerror(errno));
+                JB_LOG_INFO(jb_log_shm(), "shm cannot be truncated with %{public}s. Try to recreate shm.", strerror(errno));
                 close(shm_fd);
                 shm_unlink(JACK_SHMPATH);
                 shm_fd = shm_open(JACK_SHMPATH, O_CREAT|O_RDWR, S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH|S_IWOTH);
                 if (shm_fd < 0) {
-                    ERROR(LOG_ERR, "shm cannot be recreated with %s.\n", strerror(errno));
+                    JB_LOG_ERR(jb_log_shm(), "shm cannot be recreated with %{public}s.", strerror(errno));
                     return -1;
                 }
                 if (ftruncate(shm_fd, JACK_SHMSIZE) == -1) {
-                    ERROR(LOG_INFO, "shm cannot be truncated with %s.\n", strerror(errno));
+                    JB_LOG_INFO(jb_log_shm(), "shm cannot be truncated with %{public}s.", strerror(errno));
                 }
             }
-            ERROR(LOG_INFO, "Recreated shm because shm size is not matched as expected. (%d)\n", 0);
+            JB_LOG_INFO(jb_log_shm(), "Recreated shm because shm size is not matched as expected. (%d)", 0);
         }
         close(shm_fd);
         return 0;
@@ -169,23 +164,23 @@ protected:
         
         shm_fd = shm_open(JACK_SHMPATH, O_RDWR, S_IRUSR|S_IWUSR|S_IRGRP|S_IWGRP|S_IROTH|S_IWOTH);
         if (shm_fd < 0) {
-            ERROR(LOG_ERR, "shm_open() failed with %s.\n", strerror(errno));
+            JB_LOG_ERR(jb_log_shm(), "shm_open() failed with %{public}s.", strerror(errno));
             return -1;
         }
         
         if (fstat(shm_fd, &stat) < 0) {
-            ERROR(LOG_ERR, "fstat() failed with %s.\n", strerror(errno));
+            JB_LOG_ERR(jb_log_shm(), "fstat() failed with %{public}s.", strerror(errno));
             return -1;
         } else {
             if (stat.st_size != JACK_SHMSIZE) {
-                ERROR(LOG_ERR, "does not match shmsize(%lld). May be driver version mismatch\n", stat.st_size);
+                JB_LOG_ERR(jb_log_shm(), "does not match shmsize(%lld). May be driver version mismatch", stat.st_size);
             }
         }
         
         char* shm_base = (char*)mmap(NULL, REGSMAP_SIZE, PROT_READ|PROT_WRITE, MAP_SHARED, shm_fd, instance*REGSMAP_BOUNDARY);
         //char* shm_base = (char*)mmap(NULL, JACK_SHMSIZE, PROT_READ|PROT_WRITE, MAP_SHARED, shm_fd, 0);
         if (shm_base == MAP_FAILED) {
-            ERROR(LOG_ERR, "mmap() failed with %s\n", strerror(errno));
+            JB_LOG_ERR(jb_log_shm(), "mmap() failed with %{public}s", strerror(errno));
             return -1;
         }
 
