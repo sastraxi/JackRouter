@@ -21,9 +21,29 @@ set -e
 loggedInUser=$(/usr/bin/stat -f%Su /dev/console)
 if [ -n "$loggedInUser" ] && [ "$loggedInUser" != "root" ]; then
     loggedInUID=$(/usr/bin/id -u "$loggedInUser")
+    # Bootout both labels first, *then* wait + SIGKILL stragglers, *then*
+    # bootstrap. Doing bootout-then-bootstrap per-label races: bootout returns
+    # before the process actually exits, so the bootstrap of the same label can
+    # hit "default server already active" and KeepAlive-loops forever (jackd
+    # holds the JACK server socket past SIGTERM if it was wedged from the
+    # killall coreaudiod cascade above). Mirrors jackbridge-ctl's stop logic.
+    for label in com.jackbridge.daemon com.jackbridge.jackd; do
+        /bin/launchctl bootout "gui/$loggedInUID/$label" 2>/dev/null || true
+    done
+    for i in 1 2 3 4 5 6; do
+        if ! /usr/bin/pgrep -x -U "$loggedInUID" JackBridged >/dev/null && \
+           ! /usr/bin/pgrep -f -U "$loggedInUID" "jackd .*coreaudio" >/dev/null; then
+            break
+        fi
+        /bin/sleep 0.5
+    done
+    /usr/bin/pkill -9 -x -U "$loggedInUID" JackBridged 2>/dev/null || true
+    /usr/bin/pkill -9 -f -U "$loggedInUID" "jackd .*coreaudio" 2>/dev/null || true
+
     for label in com.jackbridge.jackd com.jackbridge.daemon; do
         plist="/Library/LaunchAgents/$label.plist"
-        /bin/launchctl bootout "gui/$loggedInUID/$label" 2>/dev/null || true
+        # Clear any persisted disabled-state override
+        /bin/launchctl enable "gui/$loggedInUID/$label" 2>/dev/null || true
         /bin/launchctl bootstrap "gui/$loggedInUID" "$plist" || true
     done
 fi

@@ -1367,7 +1367,22 @@ void	SA_Device::GetZeroTimeStamp(Float64& outSampleTime, UInt64& outHostTime, UI
             };
             SA_PlugIn::Host_PropertiesChanged(GetObjectID(), 1, &addr);
         }
-    } else if (mDeviceIsAlive.load(std::memory_order_acquire)) {
+    } else if (mDeviceIsAlive.load(std::memory_order_acquire) &&
+               mRingBufferFrameSize > 0 &&
+               mLastDaemonAliveHostTime != 0 &&
+               theHostTicksPerRingBuffer > 0.0) {
+        // Guards above: skip the check before _HW_Open has set the ring-buffer
+        // size, before we've ever observed a heartbeat tick (otherwise
+        // `now - 0` is enormous on the first call), and before
+        // gDevice_HostTicksPerFrame has been initialized (otherwise threshold
+        // is 0 and `now - last > 0` is trivially true → log spam every IO
+        // cycle).
+        //
+        // TODO(lifecycle): the gDevice_HostTicksPerFrame == 0 case is itself a
+        // bug — that global is supposed to be set during _HW_Open / device
+        // construction. Something is calling GetZeroTimeStamp before init
+        // completes, or the global isn't being set on the path we think it is.
+        // Find out where and fix the ordering instead of guarding here.
         UInt64 threshold = (UInt64)(5.0 * theHostTicksPerRingBuffer);
         if (now - mLastDaemonAliveHostTime > threshold) {
             mDeviceIsAlive.store(false, std::memory_order_release);

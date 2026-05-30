@@ -32,10 +32,20 @@ SOFTWARE.
 #include <cstdlib>
 #include <csignal>
 #include <cstring>
+#include <cerrno>
 #include <pthread.h>
+#include <atomic>
 #include "jackClient.hpp"
 #include "JackBridge.h"
 #include "jb_log.hpp"
+
+// Set in main() before jack_activate; read by the port-registration callback to
+// wake the main thread out of sigwait when slave ports come or go. Notification
+// callbacks are forbidden from calling jack_connect (JACK aborts with
+// "Cannot callback the server in notification thread"), so we defer the wiring
+// pass to the main thread via SIGUSR1.
+static pthread_t g_main_thread;
+static std::atomic<bool> g_wire_dirty{false};
 #ifdef _WITH_MIDI_BRIDGE_
 #include <rtmidi/RtMidi.h>
 #define MAX_MIDI_PORTS 256
@@ -80,6 +90,12 @@ public:
 #else
         register_ports((const char**)nameAin, (const char**)nameAout, NULL, NULL);
 #endif // _WITH_MIDI_BRIDGE_
+
+        // Must be set before jack_activate (in JackClient::activate). Fires for
+        // every port registration after activation — we filter for slave ports
+        // and re-run auto_wire() so connections survive netmanager reloads or
+        // pi restarts.
+        jack_set_port_registration_callback(client, _port_registration_callback, this);
 
         // For DEBUG
         lastHostTime = 0;
@@ -235,6 +251,20 @@ public:
         isVerbose = flag;
     }
 
+    // Auto-wire netmanager slave ports to our HAL bridge ports. Called once
+    // after activate() to pick up slaves that registered before us, and again
+    // from the port-registration callback when a new slave shows up later
+    // (netadapter reload, pi reboot, etc.). Idempotent: jack_connect returns
+    // EEXIST for already-connected pairs, which we treat as success.
+    //
+    // Policy is "first match per channel": the first *:from_slave_<n> seen is
+    // wired to JackBridge input_<n>, etc. Multi-slave fan-out and an opt-out
+    // are deferred to config.plist (PLAN.md §3.4.3).
+    void auto_wire() {
+        wire_direction("from_slave", JackPortIsOutput, audioIn, nAudioIn);
+        wire_direction("to_slave",   JackPortIsInput,  audioOut, nAudioOut);
+    }
+
     void on_shutdown() override {
         // Called by jackd when it goes away (intentional stop, crash, whatever).
         // Zero the heartbeat so the HAL's staleness watchdog flips DeviceIsAlive
@@ -247,7 +277,68 @@ public:
         kill(getpid(), SIGTERM);
     }
 
+    static void _port_registration_callback(jack_port_id_t port_id, int registered, void* arg) {
+        // Only react to port appearances, not departures — we don't need to
+        // disconnect anything when a slave goes away (jackd handles that).
+        if (!registered) return;
+        JackBridge* self = (JackBridge*)arg;
+        jack_port_t* port = jack_port_by_id(self->client, port_id);
+        if (!port) return;
+        const char* shortname = jack_port_short_name(port);
+        if (!shortname) return;
+        if (strncmp(shortname, "from_slave_", 11) == 0 ||
+            strncmp(shortname, "to_slave_", 9)   == 0) {
+            // Defer to main thread — jack_connect is illegal from here.
+            g_wire_dirty.store(true, std::memory_order_release);
+            pthread_kill(g_main_thread, SIGUSR1);
+        }
+    }
+
 private:
+    // Walks all ports of the given direction, filters by short-name == "<role>_<n>",
+    // and connects the first match per channel to our local port `local[n-1]`.
+    // `flags` selects the *remote* port direction: JackPortIsOutput when we're
+    // looking for sources to feed our inputs, JackPortIsInput when we're looking
+    // for sinks for our outputs.
+    void wire_direction(const char* role, unsigned long flags,
+                        jack_port_t* const* local, int n_local) {
+        const char** ports = jack_get_ports(client, NULL,
+                                            JACK_DEFAULT_AUDIO_TYPE, flags);
+        if (!ports) return;
+
+        for (int ch = 1; ch <= n_local; ch++) {
+            char suffix[32];
+            snprintf(suffix, sizeof(suffix), "%s_%d", role, ch);
+
+            const char* match = NULL;
+            for (const char** p = ports; *p; p++) {
+                const char* colon = strrchr(*p, ':');
+                if (!colon) continue;
+                if (strcmp(colon + 1, suffix) != 0) continue;
+                match = *p;
+                break;
+            }
+            if (!match) continue;
+
+            // jack_connect takes source first, then destination.
+            const char* local_name = jack_port_name(local[ch - 1]);
+            const char* src = (flags & JackPortIsOutput) ? match      : local_name;
+            const char* dst = (flags & JackPortIsOutput) ? local_name : match;
+
+            int rc = jack_connect(client, src, dst);
+            if (rc == 0) {
+                JB_LOG_INFO(jb_log_jack(),
+                    "auto-wire: %{public}s -> %{public}s", src, dst);
+            } else if (rc != EEXIST) {
+                JB_LOG_DEFAULT(jb_log_jack(),
+                    "auto-wire: jack_connect %{public}s -> %{public}s failed rc=%d",
+                    src, dst, rc);
+            }
+        }
+
+        jack_free(ports);
+    }
+
     bool isActive, isSyncMode, isVerbose;
     bool showmsg;
     uint64_t lastHostTime;
@@ -474,7 +565,12 @@ main(int argc, char** argv)
     sigemptyset(&sigset);
     sigaddset(&sigset, SIGINT);
     sigaddset(&sigset, SIGTERM);
+    sigaddset(&sigset, SIGUSR1);
     pthread_sigmask(SIG_BLOCK, &sigset, NULL);
+
+    // Capture before any JACK threads spawn so the port-registration callback
+    // can pthread_kill us awake.
+    g_main_thread = pthread_self();
 
     while ((ch = getopt(argc, argv, "vi:o:")) != -1) {
         switch (ch) {
@@ -513,11 +609,23 @@ main(int argc, char** argv)
     jackBridge[0]->activate();
     //jackBridge[1]->activate();
 
-    // Wait for SIGINT (operator), SIGTERM (launchctl bootout / jack_on_shutdown
-    // self-raise). Either way we tear down the JACK client + drop the heartbeat
-    // so the HAL flips DeviceIsAlive=0 quickly.
+    // After activation, pick up any slave ports that registered before us.
+    // Slaves that connect later are picked up by the port-registration callback.
+    jackBridge[0]->auto_wire();
+
+    // Event loop. SIGUSR1 = slave ports changed, run auto_wire on the main
+    // thread (legal context for jack_connect). SIGINT/SIGTERM = teardown.
     int sig = 0;
-    sigwait(&sigset, &sig);
+    while (true) {
+        sigwait(&sigset, &sig);
+        if (sig == SIGUSR1) {
+            if (g_wire_dirty.exchange(false, std::memory_order_acq_rel)) {
+                jackBridge[0]->auto_wire();
+            }
+            continue;
+        }
+        break;
+    }
     JB_LOG_DEFAULT(jb_log_daemon(), "caught signal %d, shutting down", sig);
 
     delete jackBridge[0];

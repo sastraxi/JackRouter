@@ -51,6 +51,20 @@ cmd_stop() {
         /bin/launchctl bootout "$DOMAIN/$label" 2>/dev/null || true
         /bin/launchctl disable "$DOMAIN/$label" 2>/dev/null || true
     done
+    # bootout returns before the process is actually reaped; wait up to ~3s for
+    # both to exit, then SIGKILL anything left so `restart` reliably hands a
+    # clean shm region + clean JACK socket to the next start. Without this,
+    # stragglers can hold the JACK server socket and the new jackd silently
+    # attaches to the wrong server.
+    for i in 1 2 3 4 5 6; do
+        if ! /usr/bin/pgrep -x -U "$UID_NUM" JackBridged >/dev/null && \
+           ! /usr/bin/pgrep -f -U "$UID_NUM" "jackd .*coreaudio" >/dev/null; then
+            break
+        fi
+        sleep 0.5
+    done
+    /usr/bin/pkill -9 -x -U "$UID_NUM" JackBridged 2>/dev/null || true
+    /usr/bin/pkill -9 -f -U "$UID_NUM" "jackd .*coreaudio" 2>/dev/null || true
     echo "stopped: $LABELS"
 }
 
