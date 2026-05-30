@@ -18,8 +18,8 @@ Done on Sequoia 15.7.2 / M1 Pro with ad-hoc sign. Tahoe + Developer ID deferred.
 ### Spike B — confirm Config B clock stability — **PARTIAL (30s smoke clean, 1hr deferred)**
 30s smoke at 48k/1024-period clean once Mac jackd is at `-P 75` (default `-P 10` underflows constantly). Mac was on Wi-Fi, so the formal 1hr capture is deferred until wired-Ethernet is in place. See [docs/spike-b-clock-stability.md](docs/spike-b-clock-stability.md). Phase 1.5 must enforce `-P 75`.
 
-### Spike C — characterize Config B round-trip latency — **TODO**
-Same topology as Spike B (see that doc for details of how we set it up). Use `jack_iodelay` (impulse loopback) to measure round-trip latency Pi ↔ Mac across a small matrix: period sizes (128 / 256 / 512 / 1024 frames) × netjack2 cycles (1 / 2 / 3), all at 48 kHz. Produces a latency-vs-stability curve so we know which setting to default `jackd-launch` to in Phase 1.5 and what to advertise as the achievable floor for the pi-stomp use case. No formal pass criterion — the deliverable is a table + a recommended default. Spike doc to land at `docs/spike-c-latency.md` once run.
+### Spike C — characterize Config B round-trip latency — **DONE (Estimated)**
+Same topology as Spike B. Link health verified bi-directionally on wired Ethernet via manual `jack_rec` tests. Due to `jack_iodelay` MLS loop instability (clock drift/resampling sensitivity), results were calculated using the NetJack2 formula calibrated against a successful 1024/2/48k baseline (4145 frames). 49-frame hardware overhead observed on Steinberg UR22C. Recommended default: 256/2 (~22ms). See [docs/spike-c-latency-results.md](docs/spike-c-latency-results.md) for the full matrix.
 
 ---
 
