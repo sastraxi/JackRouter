@@ -52,7 +52,13 @@ fi
 
 echo "jackd-launch: using ClockDeviceUID=$CLOCK_UID" >&2
 
-"$JACKD" -R -P 75 -d coreaudio -d "~:$CLOCK_UID" -r 48000 -p 128 &
+# `-P <uid>` (playback-only) rather than `-d ~:<uid>` (duplex): the typical
+# built-in output device has no input streams, so duplex silently falls back
+# to "default in + default out" — a different-clock-domain pair that fails
+# aggregate creation, and (worse) opens the default microphone, triggering
+# repeated TCC prompts on every KeepAlive restart. JackBridge's actual audio
+# I/O flows through shm + netJACK2, so the clock device only needs playback.
+"$JACKD" -R -P 75 -d coreaudio -P "$CLOCK_UID" -r 48000 -p 128 &
 JACKD_PID=$!
 
 # Wait for jackd to be ready (jack_lsp succeeds once the server is up).
