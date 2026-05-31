@@ -2,6 +2,9 @@
 # JackBridge postinstall.
 #
 # - Reload coreaudiod so the freshly-installed HAL plugin is picked up.
+# - Bootstrap the system LaunchDaemon that pins the netJACK2 multicast group
+#   to the right wired NIC (without this netmanager joins on the default
+#   route, which is usually Wi-Fi, and the pi is invisible).
 # - Bootstrap the per-user LaunchAgents into the active GUI session so the user
 #   doesn't have to log out / back in.
 #
@@ -11,6 +14,18 @@
 set -e
 
 /usr/bin/killall coreaudiod 2>/dev/null || true
+
+# Bootstrap the netJACK2 multicast-route watcher (system domain, runs as
+# root). The watcher pins the route, then blocks on notifyutil waiting for
+# the next network-state change; KeepAlive=true cycles it on every change.
+# launchd starts it immediately on bootstrap, so the first pin happens here.
+ROUTE_LABEL=com.jackbridge.route
+ROUTE_PLIST=/Library/LaunchDaemons/$ROUTE_LABEL.plist
+if [ -f "$ROUTE_PLIST" ]; then
+    /bin/launchctl bootout "system/$ROUTE_LABEL" 2>/dev/null || true
+    /bin/launchctl enable "system/$ROUTE_LABEL" 2>/dev/null || true
+    /bin/launchctl bootstrap system "$ROUTE_PLIST" || true
+fi
 
 # Expose jackbridge-ctl on $PATH. /usr/local/bin exists by default on macOS;
 # `ln -sf` overwrites any prior symlink (e.g. an upgrade reinstall) without

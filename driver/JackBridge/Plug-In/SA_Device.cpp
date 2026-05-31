@@ -323,7 +323,16 @@ bool	SA_Device::Device_HasProperty(AudioObjectID inObjectID, pid_t inClientPID, 
 		case kAudioDevicePropertyDeviceCanBeDefaultSystemDevice:
 			theAnswer = (inAddress.mScope == kAudioObjectPropertyScopeInput) || (inAddress.mScope == kAudioObjectPropertyScopeOutput);
 			break;
-			
+
+		case kAudioObjectPropertyElementName:
+			//	DAWs (REAPER in particular) query channel labels at Device scope
+			//	with mElement = absolute 1-based channel index, not via Stream
+			//	objects. Mirror the Stream-level handler so the names show up
+			//	regardless of which scope the host walks.
+			theAnswer = ((inAddress.mScope == kAudioObjectPropertyScopeInput  && inAddress.mElement >= 1 && inAddress.mElement <= 4) ||
+			             (inAddress.mScope == kAudioObjectPropertyScopeOutput && inAddress.mElement >= 1 && inAddress.mElement <= 2));
+			break;
+
 		default:
 			theAnswer = SA_Object::HasProperty(inObjectID, inClientPID, inAddress);
 			break;
@@ -495,6 +504,10 @@ UInt32	SA_Device::Device_GetPropertyDataSize(AudioObjectID inObjectID, pid_t inC
 
 		case kAudioDevicePropertyZeroTimeStampPeriod:
 			theAnswer = sizeof(UInt32);
+			break;
+
+		case kAudioObjectPropertyElementName:
+			theAnswer = sizeof(CFStringRef);
 			break;
 
 		default:
@@ -898,6 +911,33 @@ void	SA_Device::Device_GetPropertyData(AudioObjectID inObjectID, pid_t inClientP
 			ThrowIf(inDataSize < sizeof(UInt32), CAException(kAudioHardwareBadPropertySizeError), "SA_Device::Device_GetPropertyData: not enough space for the return value of kAudioDevicePropertyZeroTimeStampPeriod for the device");
 			*reinterpret_cast<UInt32*>(outData) = mRingBufferFrameSize;
 			outDataSize = sizeof(UInt32);
+			break;
+
+		case kAudioObjectPropertyElementName:
+			//	Device-scope channel labels. REAPER (and others) query here
+			//	with mElement = absolute 1-based channel index, not via Stream
+			//	objects. Layout: 4 inputs [In1, In2, ModOut1, ModOut2],
+			//	2 outputs [Out1, Out2]. The Stream-level handler stays for
+			//	hosts that walk that path; this one covers Device-scope walkers.
+			{
+				ThrowIf(inDataSize < sizeof(CFStringRef), CAException(kAudioHardwareBadPropertySizeError), "SA_Device::Device_GetPropertyData: not enough space for the return value of kAudioObjectPropertyElementName for the device");
+				CFStringRef name = CFSTR("");
+				if (inAddress.mScope == kAudioObjectPropertyScopeInput) {
+					switch (inAddress.mElement) {
+						case 1: name = CFSTR("In1"); break;
+						case 2: name = CFSTR("In2"); break;
+						case 3: name = CFSTR("ModOut1"); break;
+						case 4: name = CFSTR("ModOut2"); break;
+					}
+				} else if (inAddress.mScope == kAudioObjectPropertyScopeOutput) {
+					switch (inAddress.mElement) {
+						case 1: name = CFSTR("Out1"); break;
+						case 2: name = CFSTR("Out2"); break;
+					}
+				}
+				*reinterpret_cast<CFStringRef*>(outData) = (CFStringRef)CFRetain(name);
+				outDataSize = sizeof(CFStringRef);
+			}
 			break;
 
 		default:

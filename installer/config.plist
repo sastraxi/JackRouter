@@ -52,6 +52,15 @@
         <integer>1500</integer>
     </dict>
 
+    <!-- Interface override for the netJACK2 multicast group pin.
+         Empty (default) = auto-detect (direct-cable 169.254.x preferred,
+         then any wired iface with carrier, then Wi-Fi as a last resort).
+         Set explicitly to e.g. `en7` to lock to a specific Thunderbolt
+         dongle. Enumerate with `networksetup -listallhardwareports`.
+         Editing this file kicks com.jackbridge.route, which re-pins. -->
+    <key>NetworkInterface</key>
+    <string></string>
+
     <!-- Auto-wiring inside jackd once the daemon's JACK client is up.
          ToNetmanager / FromNetmanager connect JackBridged's ports to the
          netmanager client (i.e. send/receive over the network to the Pi).

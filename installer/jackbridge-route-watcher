@@ -1,0 +1,22 @@
+#!/bin/sh
+# Long-running route pinner: re-runs jackbridge-pin-route on every macOS
+# network-state change (cable plug/unplug, link change, lease change, Wi-Fi
+# join, etc).
+#
+# Lifecycle, paired with KeepAlive=true on com.jackbridge.route:
+#   1. launchd starts us.
+#   2. We pin the multicast route via the detector.
+#   3. We block in `notifyutil -1` until the next network-change notification.
+#   4. notifyutil exits → this script exits → launchd restarts us.
+#   5. GOTO 2.
+#
+# Steady state is one sleeping process. Pin-script failures don't tear down
+# the watcher — we want to keep waiting for the network to come back rather
+# than fail-loop the LaunchDaemon.
+set -u
+
+SUPPORT="/Library/Application Support/JackBridge"
+PIN="$SUPPORT/jackbridge-pin-route"
+
+"$PIN" || true
+exec /usr/bin/notifyutil -1 com.apple.system.config.network_change
