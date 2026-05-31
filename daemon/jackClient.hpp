@@ -59,6 +59,7 @@ protected:
     bool is_master;
 
     virtual int process_callback(jack_nframes_t nframes);
+    virtual int xrun_callback();
     virtual int sync_callback(jack_transport_state_t state, jack_position_t *pos);
     virtual void timebase_callback(jack_transport_state_t state, jack_nframes_t nframes,
                                        jack_position_t *pos, int new_pos);
@@ -76,6 +77,7 @@ protected:
 private:
     uint32_t cb_flags;
     static int _process_callback(jack_nframes_t nframes, void *arg);
+    static int _xrun_callback(void *arg);
     static int _sync_callback(jack_transport_state_t state, jack_position_t *pos, void *arg);
     static void _timebase_callback(jack_transport_state_t state, jack_nframes_t nframes,
                           jack_position_t *pos, int new_pos, void *arg);

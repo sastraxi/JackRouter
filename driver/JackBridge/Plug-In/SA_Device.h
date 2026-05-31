@@ -212,14 +212,13 @@ private:
     SInt64                   mJitterOutLeadSum;
     UInt32                   mJitterLastNFrames;
     UInt64                   mJitterLastHostTime;
-
-    // Guarantee-violation tally. Counts the cycles where the daemon's
-    // published write head was behind the HAL's input read window (input
-    // underrun → crackle) or its read head ran past the HAL's output write
-    // head (output overrun). Worst shortfall in frames is the value to size
-    // JitterFrames against — see config.plist. Step 4 of sync rework.
-    UInt64                   mInputUnderrunCount, mOutputOverrunCount;
-    SInt64                   mInputUnderrunMax, mOutputOverrunMax;
+    // Per-window near-miss counters: how many cycles in this 5s window had
+    // inLead (or outLead) <16 frames of headroom. The 5s aggregates smooth
+    // over single-cycle excursions, hiding the events that actually cause
+    // audible crackles. mJitterMaxNFrames tracks the largest IO call CA
+    // handed us — values >nominal mean CA bunched multiple cycles together.
+    UInt32                   mJitterInNearMiss, mJitterOutNearMiss;
+    UInt32                   mJitterMaxNFrames;
 };
 
 #endif	//	__SA_Device_h__

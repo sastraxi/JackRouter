@@ -41,6 +41,13 @@ int JackClient::_process_callback(jack_nframes_t nframes, void *arg) {
     return obj->process_callback(nframes);
 }
 
+int JackClient::xrun_callback() { return 0; }
+
+int JackClient::_xrun_callback(void *arg) {
+    JackClient* obj = (JackClient*)arg;
+    return obj->xrun_callback();
+}
+
 int JackClient::sync_callback(jack_transport_state_t state, jack_position_t *pos) {
     return 0;
 }
@@ -139,6 +146,9 @@ int JackClient::register_ports(const char *nameAin[], const char *nameAout[],
 void JackClient::activate() {
     if (cb_flags & JACK_PROCESS_CALLBACK) {
         jack_set_process_callback(client, _process_callback, this);
+    }
+    if (cb_flags & JACK_XRUN_CALLBACK) {
+        jack_set_xrun_callback(client, _xrun_callback, this);
     }
     //jack_set_freewheel_callback(client, _freewheel_callback, arg);
     jack_on_shutdown(client, _on_shutdown, this);

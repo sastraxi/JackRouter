@@ -25,7 +25,7 @@
              system_profiler SPAudioDataType
          or check `jackd -d coreaudio -l` output. -->
     <key>ClockDeviceUID</key>
-    <string></string>
+    <string>BuiltInSpeakerDevice</string>
 
     <key>SampleRate</key>
     <integer>48000</integer>

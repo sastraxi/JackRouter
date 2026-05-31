@@ -86,6 +86,9 @@ SA_Device::SA_Device(AudioObjectID inObjectID, UInt32 instance)
 	mJitterCycleCount(0),
 	mJitterInSampleCount(0),
 	mJitterOutSampleCount(0),
+	mJitterInNearMiss(0),
+	mJitterOutNearMiss(0),
+	mJitterMaxNFrames(0),
 	mJitterInLeadMin(INT64_MAX),
 	mJitterInLeadMax(INT64_MIN),
 	mJitterInLeadSum(0),
@@ -93,11 +96,7 @@ SA_Device::SA_Device(AudioObjectID inObjectID, UInt32 instance)
 	mJitterOutLeadMax(INT64_MIN),
 	mJitterOutLeadSum(0),
 	mJitterLastNFrames(0),
-	mJitterLastHostTime(0),
-	mInputUnderrunCount(0),
-	mOutputOverrunCount(0),
-	mInputUnderrunMax(0),
-	mOutputOverrunMax(0)
+	mJitterLastHostTime(0)
 {
 	for(int i=0; i<kNumberOfInputSubObjects; i++)
     {
@@ -1557,6 +1556,7 @@ void	SA_Device::BeginIOOperation(UInt32 inOperationID, UInt32 inIOBufferFrameSiz
 		                         / gDevice_HostTicksPerFrame);
 		if (inLead < mJitterInLeadMin) mJitterInLeadMin = inLead;
 		if (inLead > mJitterInLeadMax) mJitterInLeadMax = inLead;
+		if (inLead < 16) mJitterInNearMiss++;
 		mJitterInLeadSum += inLead;
 		mJitterInSampleCount++;
 	} else if (inOperationID == kAudioServerPlugInIOOperationWriteMix) {
@@ -1564,6 +1564,7 @@ void	SA_Device::BeginIOOperation(UInt32 inOperationID, UInt32 inIOBufferFrameSiz
 		                          / gDevice_HostTicksPerFrame);
 		if (outLead < mJitterOutLeadMin) mJitterOutLeadMin = outLead;
 		if (outLead > mJitterOutLeadMax) mJitterOutLeadMax = outLead;
+		if (outLead < 16) mJitterOutNearMiss++;
 		mJitterOutLeadSum += outLead;
 		mJitterOutSampleCount++;
 	} else {
@@ -1577,6 +1578,7 @@ void	SA_Device::BeginIOOperation(UInt32 inOperationID, UInt32 inIOBufferFrameSiz
 	mJitterLastHostTime = cycleHostTime;
 	mJitterCycleCount++;
 	mJitterLastNFrames = inIOBufferFrameSize;
+	if (inIOBufferFrameSize > mJitterMaxNFrames) mJitterMaxNFrames = inIOBufferFrameSize;
 
 	// Step 3: publish HAL anchor under a seqlock. Single writer (this thread,
 	// this per-cycle path), so the dance is: bump seq to odd, write fields,
@@ -1596,37 +1598,6 @@ void	SA_Device::BeginIOOperation(UInt32 inOperationID, UInt32 inIOBufferFrameSiz
 	shmHalSampleRate->store(mSampleRateShadow, std::memory_order_relaxed);
 	shmHalAnchorSeq->store(seq + 1, std::memory_order_release);
 
-	// Step 4: guarantee check. Gate on heartbeat + non-zero daemon heads so
-	// the startup race (daemon hasn't written anything yet, HAL sampleTime
-	// already growing) doesn't dominate the count.
-	UInt64 daemonWrite = shmWriteFrameNumber[0]->load(std::memory_order_acquire);
-	UInt64 daemonRead  = shmReadFrameNumber[0]->load(std::memory_order_acquire);
-	bool daemonReady = mDeviceIsAlive.load(std::memory_order_acquire) &&
-	                   daemonWrite > 0 && daemonRead > 0;
-	if (daemonReady) {
-		UInt64 inputHead  = (UInt64)inIOCycleInfo.mInputTime.mSampleTime;
-		UInt64 outputHead = (UInt64)inIOCycleInfo.mOutputTime.mSampleTime;
-
-		// Input underrun: HAL is about to read frames [inputHead, inputHead+N)
-		// from the input ring; daemon must have written through at least
-		// inputHead+N. Shortfall is how many frames the daemon was behind.
-		if (daemonWrite < inputHead + inIOBufferFrameSize) {
-			SInt64 shortfall = (SInt64)(inputHead + inIOBufferFrameSize)
-			                 - (SInt64)daemonWrite;
-			mInputUnderrunCount++;
-			if (shortfall > mInputUnderrunMax) mInputUnderrunMax = shortfall;
-		}
-
-		// Output overrun: daemon's read head must not have passed the start
-		// of the block HAL is about to write. If it has, daemon read garbage
-		// from positions HAL hadn't filled yet.
-		if (daemonRead > outputHead) {
-			SInt64 overrun = (SInt64)daemonRead - (SInt64)outputHead;
-			mOutputOverrunCount++;
-			if (overrun > mOutputOverrunMax) mOutputOverrunMax = overrun;
-		}
-	}
-
 	// Emit ~every 5s. cycles_per_5s = SR*5/nframes. Skip if nframes unknown.
 	UInt64 cyclesPer5s = (inIOBufferFrameSize > 0)
 	                   ? (mSampleRateShadow * 5 / inIOBufferFrameSize)
@@ -1639,31 +1610,20 @@ void	SA_Device::BeginIOOperation(UInt32 inOperationID, UInt32 inIOBufferFrameSiz
 	SInt64 inMean  = (mJitterInSampleCount  > 0) ? mJitterInLeadSum  / (SInt64)mJitterInSampleCount  : 0;
 	SInt64 outMean = (mJitterOutSampleCount > 0) ? mJitterOutLeadSum / (SInt64)mJitterOutSampleCount : 0;
 	JB_LOG_INFO(jb_log_driver(),
-		"jitter nframes=%u cycles=%llu inLead{min=%lld mean=%lld max=%lld} outLead{min=%lld mean=%lld max=%lld}",
-		(unsigned)inIOBufferFrameSize, (unsigned long long)mJitterCycleCount,
+		"jitter nframes=%u maxNFrames=%u cycles=%llu inLead{min=%lld mean=%lld max=%lld nearMiss=%u} outLead{min=%lld mean=%lld max=%lld nearMiss=%u}",
+		(unsigned)inIOBufferFrameSize, (unsigned)mJitterMaxNFrames,
+		(unsigned long long)mJitterCycleCount,
 		(long long)mJitterInLeadMin, (long long)inMean, (long long)mJitterInLeadMax,
-		(long long)mJitterOutLeadMin, (long long)outMean, (long long)mJitterOutLeadMax);
-
-	// Guarantee tally — non-zero counts mean JitterFrames in config.plist is
-	// too small and the daemon's projection didn't stay inside HAL's window.
-	// Emitted at warn level when non-zero so a tuning loop can grep for it.
-	if (mInputUnderrunCount > 0 || mOutputOverrunCount > 0) {
-		JB_LOG_ERR(jb_log_driver(),
-			"guarantee MISS cycles=%llu inUnderrun{count=%llu maxShortfall=%lld} outOverrun{count=%llu maxAmount=%lld} — raise JitterFrames",
-			(unsigned long long)mJitterCycleCount,
-			(unsigned long long)mInputUnderrunCount, (long long)mInputUnderrunMax,
-			(unsigned long long)mOutputOverrunCount, (long long)mOutputOverrunMax);
-	} else {
-		JB_LOG_INFO(jb_log_driver(),
-			"guarantee OK cycles=%llu", (unsigned long long)mJitterCycleCount);
-	}
+		(unsigned)mJitterInNearMiss,
+		(long long)mJitterOutLeadMin, (long long)outMean, (long long)mJitterOutLeadMax,
+		(unsigned)mJitterOutNearMiss);
 
 	mJitterCycleCount = 0;
 	mJitterInSampleCount = 0; mJitterOutSampleCount = 0;
+	mJitterInNearMiss = 0; mJitterOutNearMiss = 0;
+	mJitterMaxNFrames = 0;
 	mJitterInLeadMin  = INT64_MAX; mJitterInLeadMax  = INT64_MIN; mJitterInLeadSum  = 0;
 	mJitterOutLeadMin = INT64_MAX; mJitterOutLeadMax = INT64_MIN; mJitterOutLeadSum = 0;
-	mInputUnderrunCount = 0; mInputUnderrunMax  = 0;
-	mOutputOverrunCount = 0; mOutputOverrunMax  = 0;
 }
 
 void	SA_Device::DoIOOperation(AudioObjectID inStreamObjectID, UInt32 inOperationID, UInt32 inIOBufferFrameSize, const AudioServerPlugInIOCycleInfo& inIOCycleInfo, void* ioMainBuffer, void* ioSecondaryBuffer)
@@ -1689,8 +1649,10 @@ void	SA_Device::EndIOOperation(UInt32 inOperationID, UInt32 inIOBufferFrameSize,
 
 void	SA_Device::ReadInputData(int streamId, UInt32 inIOBufferFrameSize, Float64 inSampleTime, void* outBuffer)
 {
-	//	we need to be holding the IO lock to do this
-	CAMutex::Locker theIOLocker(mIOMutex);
+	// No lock: mRingBufferFrameSize, buf_down, and shmReadFrameNumber are set
+	// once in _HW_Open / attach_shm before IO starts and never mutated. The
+	// teardown path holds mIOMutex in Deactivate to gate this routine off
+	// before tearing those down.
     sample_t *RingBuffer = buf_down[streamId];
     std::atomic<uint64_t> *frameNum = shmReadFrameNumber[streamId];
 	
@@ -1727,8 +1689,7 @@ void	SA_Device::ReadInputData(int streamId, UInt32 inIOBufferFrameSize, Float64 
 
 void	SA_Device::WriteOutputData(int streamId, UInt32 inIOBufferFrameSize, Float64 inSampleTime, const void* inBuffer)
 {
-	//	we need to be holding the IO lock to do this
-	CAMutex::Locker theIOLocker(mIOMutex);
+	// No lock — see ReadInputData for rationale.
     sample_t *RingBuffer = buf_up[streamId];
     std::atomic<uint64_t> *frameNum = shmWriteFrameNumber[streamId];
 	

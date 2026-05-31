@@ -15,6 +15,16 @@ set -e
 
 /usr/bin/killall coreaudiod 2>/dev/null || true
 
+# Seed config.plist from the shipped default only if the user doesn't already
+# have one. Reinstalls and upgrades must preserve hand-edited settings
+# (ClockDeviceUID, NetworkInterface, etc.) — the LaunchAgents WatchPaths this
+# file, so clobbering it on every install also kicks jackd unnecessarily.
+CONFIG_DIR="/Library/Application Support/JackBridge"
+if [ ! -f "$CONFIG_DIR/config.plist" ] && [ -f "$CONFIG_DIR/config.plist.default" ]; then
+    /bin/cp "$CONFIG_DIR/config.plist.default" "$CONFIG_DIR/config.plist"
+    /bin/chmod 0644 "$CONFIG_DIR/config.plist"
+fi
+
 # Bootstrap the netJACK2 multicast-route watcher (system domain, runs as
 # root). The watcher pins the route, then blocks on notifyutil waiting for
 # the next network-state change; KeepAlive=true cycles it on every change.

@@ -78,16 +78,32 @@ echo "jackd-launch: using ClockDeviceUID=$CLOCK_UID PeriodFrames=$PERIOD_FRAMES"
 "$JACKD" -R -P 75 -d coreaudio -P "$CLOCK_UID" -r 48000 -p "$PERIOD_FRAMES" &
 JACKD_PID=$!
 
-# Wait for jackd to be ready (jack_lsp succeeds once the server is up).
-for i in 1 2 3 4 5 6 7 8 9 10; do
+# Wait for jackd to be ready, then load netmanager. Both probe and load can
+# fail transiently while coreaudiod is mid-restart cascade after a clock
+# device change — retry the load itself, not just the probe, because the
+# old readiness loop would exhaust its budget against a half-up server and
+# we'd silently lose the internal client (no slave ports => no auto-wire =>
+# no audio).
+jackd_ready=0
+for i in $(seq 1 30); do
     if /usr/local/bin/jack_lsp >/dev/null 2>&1; then
+        jackd_ready=1
         break
     fi
     sleep 0.5
 done
 
-if [ -x "$JACK_LOAD" ]; then
-    "$JACK_LOAD" netmanager || echo "jack_load netmanager failed (non-fatal)" >&2
+if [ "$jackd_ready" = "1" ] && [ -x "$JACK_LOAD" ]; then
+    for i in 1 2 3 4 5; do
+        if "$JACK_LOAD" netmanager >/dev/null 2>&1; then
+            echo "jackd-launch: netmanager loaded" >&2
+            break
+        fi
+        echo "jackd-launch: jack_load netmanager attempt $i failed, retrying" >&2
+        sleep 1
+    done
+elif [ "$jackd_ready" != "1" ]; then
+    echo "jackd-launch: jackd not ready after 15s — netmanager not loaded" >&2
 fi
 
 wait "$JACKD_PID"

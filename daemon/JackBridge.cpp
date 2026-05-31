@@ -38,6 +38,7 @@ SOFTWARE.
 #include "jackClient.hpp"
 #include "JackBridge.h"
 #include "jb_log.hpp"
+#include "workgroup.hpp"
 
 // Set in main() before jack_activate; read by the port-registration callback to
 // wake the main thread out of sigwait when slave ports come or go. Notification
@@ -80,9 +81,13 @@ static long read_config_long(const char* key, long def) {
 #define NUM_INPUT_CHANNELS  (NUM_INPUT_STREAMS*2)
 #define NUM_OUTPUT_CHANNELS (NUM_OUTPUT_STREAMS*2)
 
+// Must match kDeviceUID in driver/JackBridge/Plug-In/SA_Device.h. Used to
+// locate our HAL device for the workgroup-join handshake.
+#define JACKBRIDGE_DEVICE_UID "JackBridgeDeviceUID"
+
 class JackBridge : public JackClient, public JackBridgeDriverIF {
 public:
-    JackBridge(const char* name, int id, int num_Min, int num_Mout) : JackClient(name, JACK_PROCESS_CALLBACK), JackBridgeDriverIF(id) {
+    JackBridge(const char* name, int id, int num_Min, int num_Mout) : JackClient(name, JACK_PROCESS_CALLBACK | JACK_XRUN_CALLBACK), JackBridgeDriverIF(id) {
         if (attach_shm() < 0) {
             JB_LOG_ERR(jb_log_shm(), "attach_shm failed (id=%d)", id);
             exit(1);
@@ -121,12 +126,29 @@ public:
         jack_set_port_registration_callback(client, _port_registration_callback, this);
 
         lastTraceFrame = 0;
+
+        // Best-effort workgroup acquisition. May fail if Core Audio hasn't
+        // surfaced our HAL device yet (e.g. coreaudiod is mid-rescan) — the
+        // process callback retries until it succeeds. Joining the workgroup
+        // happens lazily on the JACK RT thread because os_workgroup_join must
+        // run on the joining thread itself.
+        mWorkgroup = workgroup_acquire_by_uid(JACKBRIDGE_DEVICE_UID);
+        mWorkgroupJoined = false;
+        mWorkgroupAcquireBackoff = 0;
+
         JB_LOG_INFO(jb_log_daemon(),
             "JackBridge#%u: start with samplerate=%d Hz, buffersize=%u bytes",
             instance, SampleRate, (unsigned)BufSize);
     }
 
     ~JackBridge() {
+        // Skip os_workgroup_leave: jack_client_close (in ~JackClient) tears
+        // down the RT thread, and the kernel releases workgroup membership
+        // when the thread dies. Just drop our reference.
+        if (mWorkgroup) {
+            os_release(mWorkgroup);
+            mWorkgroup = NULL;
+        }
 #ifdef _WITH_MIDI_BRIDGE_
         release_midi_ports();
 #endif // _WITH_MIDI_BRIDGE_
@@ -186,6 +208,37 @@ public:
     int process_callback(jack_nframes_t nframes) override {
         sample_t *ain[NUM_INPUT_CHANNELS];
         sample_t *aout[NUM_OUTPUT_CHANNELS];
+
+        // First-call workgroup wiring. Per WWDC20 "Meet Audio Workgroups",
+        // joining the device's IO-thread workgroup tells the kernel scheduler
+        // to treat this thread as co-deadline with the HAL's IOProc — exactly
+        // the relationship that exists across our shm bridge. Without it
+        // we've seen the Mac scheduler hand the IOProc multiple cycles of
+        // backlog at once, manifesting as the "guarantee MISS" log lines on
+        // the driver side. Join is one-shot, retried until acquisition
+        // succeeds (Core Audio may not have surfaced the device at startup).
+        if (!mWorkgroupJoined) {
+            if (!mWorkgroup) {
+                // Backoff: ~once per ~1s at 48k/64 (~750 cycles).
+                if (++mWorkgroupAcquireBackoff >= 750) {
+                    mWorkgroupAcquireBackoff = 0;
+                    mWorkgroup = workgroup_acquire_by_uid(JACKBRIDGE_DEVICE_UID);
+                }
+            }
+            if (mWorkgroup) {
+                uint64_t period_ns =
+                    (uint64_t)1000000000ULL * (uint64_t)nframes / (uint64_t)SampleRate;
+                uint64_t computation_ns = period_ns / 2;
+                if (workgroup_join_self(mWorkgroup, &mWorkgroupJoinToken,
+                                        period_ns, computation_ns) == 0) {
+                    mWorkgroupJoined = true;
+                } else {
+                    // Drop the workgroup so we don't tight-loop on join failure.
+                    os_release(mWorkgroup);
+                    mWorkgroup = NULL;
+                }
+            }
+        }
 
         // Heartbeat — HAL watches this counter; if it stops advancing the HAL
         // flips DeviceIsAlive=0 so the DAW disconnects instead of getting
@@ -259,6 +312,15 @@ public:
 
         FrameNumber += nframes;
 
+        return 0;
+    }
+
+    // jackd reports an xrun whenever a process cycle overruns its period or a
+    // backend cycle is dropped (netJACK2 packet loss surfaces here too). We
+    // can't get the frame count from libjack's xrun callback signature, so
+    // just timestamp it — correlate against the driver's jitter lines.
+    int xrun_callback() override {
+        JB_LOG_DEFAULT(jb_log_jack(), "jackd xrun");
         return 0;
     }
 
@@ -361,6 +423,12 @@ private:
     int64_t ncalls;
     char** nameAin;
     char** nameAout;
+
+    // Workgroup wiring; see process_callback for the lazy-join rationale.
+    os_workgroup_t mWorkgroup;
+    os_workgroup_join_token_s mWorkgroupJoinToken;
+    bool mWorkgroupJoined;
+    int  mWorkgroupAcquireBackoff;
 
     int sendToCoreAudio(float** in,int nframes) {
         unsigned int offset = FrameNumber % FramesPerBuffer;

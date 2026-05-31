@@ -84,7 +84,7 @@ install -m 0755 "$INSTALLER/jb-detect-net-iface"      "$STAGING/Library/Applicat
 install -m 0755 "$INSTALLER/jackbridge-pin-route"     "$STAGING/Library/Application Support/JackBridge/jackbridge-pin-route"
 install -m 0755 "$INSTALLER/jackbridge-route-watcher" "$STAGING/Library/Application Support/JackBridge/jackbridge-route-watcher"
 install -m 0755 "$ROOT/tools/jackbridge-ctl"       "$STAGING/Library/Application Support/JackBridge/jackbridge-ctl"
-install -m 0644 "$INSTALLER/config.plist"          "$STAGING/Library/Application Support/JackBridge/config.plist"
+install -m 0644 "$INSTALLER/config.plist"          "$STAGING/Library/Application Support/JackBridge/config.plist.default"
 install -m 0644 "$INSTALLER/launchagents/com.jackbridge.daemon.plist" "$STAGING/Library/LaunchAgents/"
 install -m 0644 "$INSTALLER/launchagents/com.jackbridge.jackd.plist"  "$STAGING/Library/LaunchAgents/"
 install -m 0644 "$INSTALLER/launchdaemons/com.jackbridge.route.plist" "$STAGING/Library/LaunchDaemons/"

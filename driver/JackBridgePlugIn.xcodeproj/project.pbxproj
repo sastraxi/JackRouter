@@ -38,6 +38,7 @@
 		8D2201902074FC650060D7BA /* JackBridge.h in Headers */ = {isa = PBXBuildFile; fileRef = 8D22018F2074FC640060D7BA /* JackBridge.h */; };
 		DA0000000000000000000011 /* JackBridge.cpp in Sources */ = {isa = PBXBuildFile; fileRef = DA0000000000000000000001 /* JackBridge.cpp */; };
 		DA0000000000000000000012 /* jackClient.cpp in Sources */ = {isa = PBXBuildFile; fileRef = DA0000000000000000000002 /* jackClient.cpp */; };
+		DA0000000000000000000017 /* workgroup.cpp in Sources */ = {isa = PBXBuildFile; fileRef = DA0000000000000000000018 /* workgroup.cpp */; };
 		DA0000000000000000000013 /* CoreAudio.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 2D7477EC157823CF00412279 /* CoreAudio.framework */; };
 		DA0000000000000000000014 /* CoreFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 2D7477AC1578168D00412279 /* CoreFoundation.framework */; };
 		DA0000000000000000000015 /* CoreMIDI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = DA0000000000000000000005 /* CoreMIDI.framework */; };
@@ -84,6 +85,8 @@
 		DA0000000000000000000001 /* JackBridge.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = JackBridge.cpp; sourceTree = "<group>"; };
 		DA0000000000000000000002 /* jackClient.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = jackClient.cpp; sourceTree = "<group>"; };
 		DA0000000000000000000003 /* jackClient.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = jackClient.hpp; sourceTree = "<group>"; };
+		DA0000000000000000000018 /* workgroup.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = workgroup.cpp; sourceTree = "<group>"; };
+		DA0000000000000000000019 /* workgroup.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = workgroup.hpp; sourceTree = "<group>"; };
 		DA0000000000000000000005 /* CoreMIDI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreMIDI.framework; path = System/Library/Frameworks/CoreMIDI.framework; sourceTree = SDKROOT; };
 		DA0000000000000000000006 /* libjack.0.dylib */ = {isa = PBXFileReference; lastKnownFileType = "compiled.mach-o.dylib"; name = libjack.0.dylib; path = "$(JACK_PREFIX)/lib/libjack.0.dylib"; sourceTree = "<absolute>"; };
 		DA0000000000000000000007 /* JackBridged */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = JackBridged; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -223,6 +226,8 @@
 				DA0000000000000000000001 /* JackBridge.cpp */,
 				DA0000000000000000000002 /* jackClient.cpp */,
 				DA0000000000000000000003 /* jackClient.hpp */,
+				DA0000000000000000000018 /* workgroup.cpp */,
+				DA0000000000000000000019 /* workgroup.hpp */,
 				DA0000000000000000000008 /* daemon.entitlements */,
 			);
 			name = daemon;
@@ -380,6 +385,7 @@
 			files = (
 				DA0000000000000000000011 /* JackBridge.cpp in Sources */,
 				DA0000000000000000000012 /* jackClient.cpp in Sources */,
+				DA0000000000000000000017 /* workgroup.cpp in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
