@@ -89,7 +89,7 @@ These are **not** owned by this service. They come from the stock pi-stomp `jack
 
 If you really want to retune, edit the stock `jack.service`'s `ExecStart=` line and `systemctl daemon-reload && systemctl restart jack`. Then restart this service so netadapter picks up the new period.
 
-End-to-end round-trip latency budget on direct Ethernet at 128/2/48k: see `docs/spike-c-latency-results.md` in the repo root. Headline: ~22 ms wall-clock, dominated by netadapter's own buffering. Going below 128 frames is not recommended — the pi runs out of RT headroom.
+End-to-end round-trip latency budget on direct Ethernet at 128/2/48k: see `docs/spike-c-latency-results.md` in the repo root. At defaults it's around 20ms roundtrip (I might have this wrong).
 
 ### Channel wiring
 
