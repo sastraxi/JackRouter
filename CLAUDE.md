@@ -7,29 +7,28 @@ The downstream use case driving this fork: a Raspberry Pi running JACK + netJACK
 ## Repo layout
 
 ```
-daemon/    JACK client + shm publisher (CLI binary)
-driver/    AudioServerPlugIn HAL bundle (Xcode project)
-tools/     chkshm / rmshm shm-inspection utilities
-docs/      Architecture, codebase tour, idiosyncrasies, setup
+daemon/      JACK client + shm publisher (built as the JackBridged Xcode target)
+driver/      AudioServerPlugIn HAL bundle (Xcode project; both targets live here)
+shared/      IPC contract header (JackBridge.h) + logging shim (jb_log.hpp)
+tools/       chkshm / rmshm shm-inspection utilities + jackbridge-ctl
+installer/   build-pkg.sh, launchd plists, postinstall, route helpers, config.plist
+pi/          Raspberry Pi side: install.sh + jackd/netJACK2 systemd helpers
+docs/        Architecture, codebase tour, idiosyncrasies, setup
+reinstall.sh One-shot: install latest pkg, wipe shm, bounce coreaudiod + agents
 ```
 
-Source of truth lives in `daemon/` and `driver/JackBridge/Plug-In/`.
+Source of truth: `daemon/`, `driver/JackBridge/Plug-In/`, `shared/JackBridge.h`.
 
 ## Build
 
+The whole tree (driver bundle + `JackBridged` daemon + helper bins) builds and packages via:
+
 ```bash
-# Daemon (current state — to be replaced with Xcode/CMake target)
-cd daemon && ./build.sh
-
-# Driver
-open driver/JackBridgePlugIn.xcodeproj   # build in Xcode
-
-# Install driver
-sudo cp -R build/JackBridgePlugIn.driver /Library/Audio/Plug-Ins/HAL/
-sudo killall coreaudiod
+./installer/build-pkg.sh                 # → installer/build/JackBridge-<version>.pkg
+./reinstall.sh                           # install pkg, rmshm, killall coreaudiod, bootcycle agents
 ```
 
-The daemon's `build.sh` is a 2-line `g++` invocation. Replace with an Xcode target as part of Phase 1 modernization (see `PLAN.md`).
+For driver-only iteration you can `open driver/JackBridgePlugIn.xcodeproj` and build the `JackBridgePlugIn` / `JackBridged` targets directly, but `reinstall.sh` is the canonical inner loop because protocol-version bumps require the shm wipe + agent bootcycle dance.
 
 ## Architecture in 30 seconds
 
@@ -47,10 +46,8 @@ Two processes, one shared-memory region (`/JackBridge`), two ring buffers (in + 
 
 ## Key idiosyncrasies (do not be surprised by these)
 
-- **IPC contract header** lives at `shared/JackBridge.h`. Both targets pick it up via `HEADER_SEARCH_PATHS=$(SRCROOT)/../shared`. Bump `JACKBRIDGE_PROTOCOL_VERSION` on every shm layout change; Phase 2.3 wires the refuse-on-mismatch handshake.
-- **POSIX shm uses `volatile` reads, no atomics, no barriers.** Daemon's own FIXMEs admit it. Works on x86 by accident; broken on Apple Silicon.
+- **IPC contract header** lives at `shared/JackBridge.h`. Both targets pick it up via `HEADER_SEARCH_PATHS=$(SRCROOT)/../shared`. Bump `JACKBRIDGE_PROTOCOL_VERSION` on every shm layout change — the cooperative handshake in `check_protocol_version()` refuses to attach on mismatch, so you also need `./reinstall.sh` (or a manual `rmshm`) to clear the stale region.
 - **Hardcoded `*2` and `8`-byte-per-frame literals** throughout assume stereo float. Don't generalize without auditing every site.
-- **No `jack_on_shutdown` handler.** If jackd dies, HAL keeps reporting STARTED and DAW gets silence forever.
 - **`tools/rmshm.c` also unlinks legacy `/jackrouter` + `/jackrouter2` names** — intentional, helps users migrating from the upstream `madhatter68/JackRouter` install.
 
 Full list with file/line citations: `docs/idiosyncrasies.md`.
@@ -65,6 +62,6 @@ Full list with file/line citations: `docs/idiosyncrasies.md`.
 
 ## Codesigning + macOS specifics
 
-Driver and daemon both need Developer ID signatures, hardened runtime, and notarization inside a `.pkg`. Daemon needs `com.apple.security.cs.disable-library-validation` to `dlopen` libjack. Install path stays `/Library/Audio/Plug-Ins/HAL/JackBridgePlugIn.driver`. Restart with `sudo killall coreaudiod` after install.
+Driver and daemon both need Developer ID signatures, hardened runtime, and notarization inside a `.pkg` — `installer/build-pkg.sh` drives that (notarization is skipped unless `NOTARY_PROFILE` is set). Daemon needs `com.apple.security.cs.disable-library-validation` to `dlopen` libjack. Install path is `/Library/Audio/Plug-Ins/HAL/JackBridgePlugIn.driver`; the daemon + helpers land in `/Library/Application Support/JackBridge` and run under LaunchAgents (`com.jackbridge.jackd`, `com.jackbridge.daemon`).
 
 Details: `docs/macos-setup.md`.
