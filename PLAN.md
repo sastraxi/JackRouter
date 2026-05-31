@@ -196,8 +196,8 @@ On both sides, the netJACK2 multicast group (`225.3.19.154`) is pinned to a spec
 - `pistomp-arch/config.sh` — added `JACKROUTER_REPO` + `JACKROUTER_REF` so the image build clones the JackRouter repo at a pinned ref.
 - `pistomp-arch/scripts/07-services.sh` — clones JackRouter to `/tmp/jackrouter` during image build, runs `bash $JACKROUTER_SRC/pi/install.sh`, cleans up. No state crosses into the image except what `pi/install.sh` writes.
 
-### 4.5 pi-stomp UI hand-off — **SPECIFIED, not yet implemented in pi-stomp**
-`../pi-stomp/JACKBRIDGE_RECORDING.md` is the contract document for the pi-stomp coding agent. Covers: extending `ui/wifi_menu.py` to prepend a "Wired Connection" row when `/sys/class/net/end0/carrier == 1`; new `ui/ethernet_menu.py` sub-screen showing IP / Sample Rate / Period / xrun 1m/5m/15m buckets + Enable/Disable toggle; `modalapi/ethernet/manager.py` for carrier polling and xrun file reading; `EthernetCableGlyph` in `uilib/font_with_glyphs.py`. Frames netadapter behind a single `systemctl start|stop pi-stomp-jackbridge.service` call so the UI never has to know netJACK2 exists.
+### 4.5 pi-stomp UI hand-off — **IN PROGRESS**
+`../pi-stomp/JACKBRIDGE_RECORDING.md` is the contract document for the pi-stomp coding agent. It adds a UI to the running pi-stomp to enable/disable netJACK2 as well as its own mod->output routing so we can completely control the hardware from our DAW.
 
 **Phase 4 done when:** the pi-stomp UI lands. End-to-end audio at 4-in/2-out 48k/128 with the watcher auto-recovering from cable replug is already verified.
 
