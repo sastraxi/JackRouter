@@ -1,65 +1,78 @@
-# JackBridge (former "JackRouter")
-## About
-This is an alternative to jackrouter for MacOS. JackBridge acts as a virtual
-audio interface (currently 2in-4out) connected to Jackaudio server directly.
-Even though the master clock of JackBridge becomes synchronized with Jack 
-server, Core Audio Applications connected via JackBridge is out of jackaudio
-connection graph scope. Therefore, I changed the name from "Router" to "Bridge".
+# JackBridge
 
-NOTE: This is still experimental prototype implementation. Please be careful using it.
+A macOS JACK ↔ CoreAudio bridge: presents a virtual **JackBridge** audio device (4-in / 2-out @ 48 kHz) backed by a JACK client. The driving use case is a Raspberry Pi running netJACK2 over Ethernet as a recording interface for Mac DAWs (Logic, Pro Tools, REAPER) — see `pi/README.md` for that side. The Mac side works on its own too: anything that talks to your local `jackd` is reachable from any CoreAudio app.
 
-## Architecture
+Fork of [`madhatter68/JackRouter`](https://github.com/madhatter68/JackRouter), modernized for Apple Silicon and Sequoia/Tahoe. Roadmap: `PLAN.md`.
 
-JackBridge consists of both a driver and a daemon, as we must connect to JACK from userland. They communicate via ringbuffers in a POSIX shared-memory region (`/JackBridge`).
+## Install
 
-- **Driver** — an `AudioServerPlugIn` HAL bundle loaded into `coreaudiod`. This is what makes JackBridge appear as a selectable audio device in DAWs. Its IO proc memcpys between the DAW's audio buffers and the shm rings.
-- **Daemon** — a userland JACK client. Its process callback memcpys between the JACK graph and the shm rings.
+1. Install [JACK2](https://github.com/jackaudio/jack2-releases/releases) (1.9.22+). Required at runtime; we `dlopen` libjack.
+2. Download the latest `JackBridge-x.y.z.pkg` from Releases. Double-click and run.
+3. Open your DAW, pick **JackBridge** as the audio device. 4 inputs, 2 outputs.
 
-Both sides run in the same CoreAudio host-clock domain, so no sample-rate conversion happens inside JackBridge. Clock-domain crossing (e.g. to a networked Pi) is netJACK2's job.
+The `.pkg` installs the HAL driver, the daemon, a managed `jackd` LaunchAgent (CoreAudio backend, `-P 75`, pinned to your built-in output for clock stability), and a system LaunchDaemon that pins the netJACK2 multicast route to the right NIC. Postinstall reloads `coreaudiod` and bootstraps everything into the current GUI session — no logout needed.
 
-## Changes
-- Master clock synchronization with Jack server
+For the pi side: install pistomp-arch with JackBridge enabled, plug Ethernet from Mac to pi, toggle "Ethernet Audio Interface" on the LCD.
 
-## Limitation
-- Supports only 44.1/48kHz mode.
+## What you get in the DAW
 
-## Build
-All JackBridge code lives on `master` — there is no `JackBridge` branch despite earlier docs to the contrary.
+| DAW input  | Source                                            |
+|------------|---------------------------------------------------|
+| In1, In2   | Raw HW capture from pi (guitar pre-pedalboard)   |
+| ModOut1/2  | Post-mod-host wet (the pedalboard tone)          |
+| **Out1/2** | Stereo monitor return back to the pi             |
 
-JackBridge consists of two parts, a daemon and a user-space Core Audio driver.
+## When it doesn't work
 
-- JackBridge daemon
-
-  ```
-  cd daemon
-  ./build.sh
-  ```
-
-  (`build.sh` is a 2-line `g++` invocation, to be replaced with an Xcode target in Phase 1.2 — see `PLAN.md`.)
-
-- JackBridge driver
-
-  Build the project named "JackBridgePlugIn.xcodeproj" with Xcode (or `xcodebuild -configuration Release`). Produces a universal arm64+x86_64 `.driver` bundle.
-
-## Installation
-- JackBridge daemon
-
-  Locate wherever you like. Just execute after jackd.
-
-- JackBridgePlugIn driver
-
-  Copy all contents to '/Library/Audio/Plug-Ins/HAL' and restart coreaudiod.
-
-```
-sudo cp -r JackBridgePlugIn.driver /Library/Audio/Plug-Ins/HAL
-sudo -u _coreaudiod killall coreaudiod
+```sh
+sudo launchctl print system/com.jackbridge.route | grep -E 'state|pid'
+cat /var/run/jackbridge-route.iface          # which NIC the route is pinned to
+route -n get 225.3.19.154 | grep interface   # what the kernel thinks
+jack_lsp | grep -i pistomp                   # pi attached?
+log stream --predicate 'subsystem == "com.jackbridge"'
+tail -f /tmp/com.jackbridge.{daemon,jackd}.err.log /var/log/com.jackbridge.route.log
 ```
 
-  Then you can see JackBridge device on your application. And you can
-  also change configuration with Audio MIDI setup application.
+If `pistomp:*` ports aren't visible after the pi service is running, it's almost always the multicast route landing on Wi-Fi. The route watcher should self-heal within a few seconds of a network-state change; force a recheck with `sudo launchctl kickstart -k system/com.jackbridge.route`.
 
-## TODO
-- Multi instance support
+If the DAW gets silence with the daemon and pi both up, version mismatch is the next thing to check: HAL and daemon must share the same `JACKBRIDGE_PROTOCOL_VERSION`. A stale driver after upgrade is the usual cause — `tools/rmshm` + reinstall the `.pkg`.
 
-## Download
-The pre-built binaries can be downloaded from http://linux-dtm.ivory.ne.jp/downloads/MacOS/JackBridge.zip
+`docs/macos-setup.md` covers the rare cases (no built-in audio, headless Mac mini, etc).
+
+## Configuration
+
+`/Library/Application Support/JackBridge/config.plist` — saving it kicks the LaunchAgents (WatchPaths). Keys:
+
+- `ClockDeviceUID` — CoreAudio UID for jackd's backend device. Empty = auto-detect built-in output. Set explicitly on headless Macs.
+- `SampleRate`, `PeriodFrames`, `RealtimePriority` — jackd args. `RealtimePriority < 75` will warn (Spike B). `PeriodFrames` is the dominant latency knob; 128 ≈ 22 ms round-trip on direct Ethernet.
+- `NetworkInterface` — name of the NIC to pin `225.3.19.154` to. Empty = auto-detect (direct-cable 169.254.x preferred, then any wired iface, then Wi-Fi).
+- `NetJack:MTU` — bump to 9000 only if both ends and every switch support jumbo frames.
+- `AutoConnect.{ToNetmanager, FromNetmanager, LocalMonitoring}` — internal wiring after daemon activate.
+
+## Building from source
+
+```sh
+brew install jack                       # provides jackd + libjack
+./installer/build-pkg.sh [version]      # one-shot: xcodebuild → pkgbuild → productbuild
+```
+
+Outputs `installer/build/JackBridge-<version>.pkg`. Unsigned by default; set `SIGN_APP_IDENTITY`, `SIGN_INSTALLER_IDENTITY`, `NOTARY_PROFILE` for a release build. Apple Silicon: `JACK_PREFIX=/opt/homebrew ./installer/build-pkg.sh`.
+
+To work on the HAL or daemon directly, open `driver/JackBridgePlugIn.xcodeproj`. The daemon is a sibling target in the same project.
+
+## Architecture (one paragraph)
+
+Two processes, one POSIX shm region (`/JackBridge`), atomic acquire/release sync on Apple Silicon. The **driver** is an `AudioServerPlugIn` HAL bundle in `coreaudiod` — memcpys between the DAW's IO proc and the shm rings. The **daemon** is a userland JACK client — memcpys between its JACK process callback and the same rings. Both sides run in the same CoreAudio host-clock domain, so no SRC inside JackBridge. Clock-domain crossing to the pi is netJACK2's job. Heartbeat + protocol-version handshake flip `kAudioDevicePropertyDeviceIsAlive` off cleanly when jackd dies, so the DAW disconnects instead of getting forever-silence. Full tour in `docs/architecture.md`; gotchas in `docs/idiosyncrasies.md`.
+
+## Pointers
+
+- `pi/README.md` — pi side, end-user oriented
+- `PLAN.md` — phased roadmap (Phases 1–4 done)
+- `docs/architecture.md` — same-clock-domain design, shm layout, lifecycle
+- `docs/macos-setup.md` — installation edge cases, manual uninstall
+- `docs/idiosyncrasies.md` — quirks worth knowing before you patch
+- `tools/` — `rmshm` (force-unlink the shm region), `chkshm` (inspect), `jackbridge-ctl` (status/stop/start)
+
+## License
+
+See `LICENSE`. Inherits from the upstream `madhatter68/JackRouter` project.
