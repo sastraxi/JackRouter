@@ -6,7 +6,7 @@ This plan assumes the architectural decisions in `docs/architecture.md`:
 - Fork of `madhatter68/JackRouter` (not `jackaudio/jack-router`).
 - Two-process design (daemon + AudioServerPlugIn HAL) via POSIX shm.
 - **Config B clock topology**: jackd on Mac uses CoreAudio backend pinned to a stable hardware device (built-in output by default); netJACK2 runs as a JACK client inside jackd and handles Pi↔Mac clock crossing itself. JackBridge sees one clock domain. **No SRC in JackBridge.**
-- Scope: 2-in / 4-out @ 48 kHz. Stereo wet return + stereo DI send is exactly the pi-stomp use case.
+- Scope: 4-in / 2-out @ 48 kHz. The DAW sees 4 inputs from the pi (raw HW capture pair + post-mod-host wet pair) and sends a stereo monitor return back. See Phase 4 / `pi/README.md` for the recording integration this scope serves.
 
 ## Spikes (do first, ~1 day total)
 
@@ -107,7 +107,15 @@ Scope simplified vs original plan: dropped the aggregate-device wrapper. Adding 
 
 Headless Macs with no built-in audio (Mac mini / Studio with only HDMI) must set `ClockDeviceUID` explicitly — documented in `config.plist` comments and `docs/macos-setup.md`.
 
-### 3.2 Meaningful channel labels (¼ day) -- *SKIPPED*
+### 3.2 Meaningful channel labels — **DONE**
+HAL exposes per-channel `kAudioObjectPropertyElementName` at both Stream and
+Device scope. Stream-scope handler maps `(streamIdx, mElement)` to the labels;
+Device-scope handler (REAPER's query path) maps `(mScope=Input/Output,
+mElement=1..N)` to the same set: In1, In2, ModOut1, ModOut2 on the input side
+(2 HW capture + 2 mod-host wet from the pi); Out1, Out2 on the output side
+(stereo monitor return). Two parallel handlers because hosts walk either
+scope — Logic uses Stream, REAPER uses Device. Both registered in
+HasProperty / GetPropertyDataSize / GetPropertyData.
 
 ### 3.3 Logging via `os_log` — **DONE**
 New `shared/jb_log.hpp` shim wraps `os_log_create("com.jackbridge", …)` with categories `daemon`, `driver`, `shm`, `jack` and `JB_LOG_{ERR,INFO,DEFAULT,DEBUG}` macros that pass format-string literals (so they aren't redacted as `<private>`; `%{public}s` is used where caller-supplied strings need to be visible). Plan claimed the HAL already used `os_log` — it didn't, it was on raw `syslog`. Both targets now route everything through the shim: daemon attach/shutdown/version/heartbeat paths, plug-in StaticInitializer/CreateDevices, device init/StartIO/StopIO, watchdog flip. Two known caveats: (1) the inside-RT verbose `printf`s inside `process_callback` / `check_progress` are left alone with a FIXME — pre-existing RT-safety violation, not 3.3's job to fix; (2) usage/help text on argv parsing still goes to `stderr` because that path is operator-CLI-invoked, not LaunchAgent-invoked. Tail with `log stream --predicate 'subsystem == "com.jackbridge"'`.
@@ -161,6 +169,40 @@ Required secrets are documented at the top of `release.yml`. The `/usr/local` sh
 
 ---
 
+## Phase 4 — Pi-stomp integration (DONE)
+
+**Goal:** ship the pi-side service that exposes the pi-stomp as a 4-in / 2-out audio interface over netJACK2, coexisting with its existing performance-pedal stack.
+
+### 4.1 Channel layout flip — **DONE**
+Bumped `JACKBRIDGE_PROTOCOL_VERSION` 3 → 4. Flipped HAL streams from 2-in/4-out to 4-in/2-out (matches the pi-stomp recording layout: 2 channels raw HW capture + 2 channels post-mod-host wet, stereo monitor return). Driver constants (`NUM_INPUT_STREAMS`, `NUM_OUTPUT_STREAMS`) updated; refuse-on-mismatch handshake (2.3) caught a stale driver during testing.
+
+### 4.2 Pi-side systemd service — **DONE**
+New tree under `pi/`:
+- `pi-stomp-jackbridge.service` — Type=simple, `Requires=jack.service`, `After=jack.service mod-host.service`. Coexists with the stock pi-stomp jackd as a *client*, not a replacement — the performance-pedal path (jack.service + mod-host + mod-ui) keeps running. No `WantedBy` — enabled/disabled on demand by the LCD UI (recording-mode toggle).
+- `bin/jackbridge-pi-up` — loads netadapter (`-C 2 -P 4`) into the running jackd, wires `system:capture_{1,2} → netadapter:playback_{1,2}` (raw capture → In1/In2 on the Mac), `mod-monitor:out_{1,2} → netadapter:playback_{3,4}` (post-mod-host wet → ModOut1/ModOut2), and `netadapter:capture_{1,2} → system:playback_{1,2}` (Mac monitor return into the pedalboard mix). Source-port filter uses `jack_lsp -p | awk '/properties:.*output/'` so mod-monitor port-name variants resolve safely without picking a sink.
+- `bin/jackbridge-pi-down` — best-effort `jack_unload netadapter`.
+- `bin/jackbridge-xrun-watcher` — tails `journalctl -u jack` for `JackRingBuffer::(Read|Write).*\b(producer|consumer) too slow`, appends epoch timestamps to `/tmp/pi-stomp-jackbridge.xruns`, atomic-rewrites the file on each append filtering entries older than 15 min (contract documented in `../pi-stomp/JACKBRIDGE_RECORDING.md`; UI reads the whole file each poll).
+
+Service unit pins `LimitMEMLOCK=infinity` + `LimitRTPRIO=infinity` to match the stock `jack.service` (without these, `jack_load` / `jack_connect` warn "Cannot lock down N byte memory area" and run unlocked — caught during deployment).
+
+### 4.3 Wired-only interface auto-detection — **DONE**
+On both sides, the netJACK2 multicast group (`225.3.19.154`) is pinned to a specific interface before netadapter / netmanager bind, so the kernel joins the group on the right NIC. The pin is auto-detected with operator override:
+
+- **Pi** (`bin/jb-detect-net-iface`): wired-only — refuses to fall back to wifi (4ch/48k over wireless would just produce mystery xruns). Preference: `$JACKBRIDGE_IFACE` env override > direct-cable iface (169.254.0.0/16 link-local) > any wired iface with carrier. No match = service start fails loudly. `ExecStartPre=+/usr/local/libexec/jackbridge/jackbridge-pin-route` runs as root via the `+` prefix; the matching unpin script reads the recorded iface from `/run/jackbridge.iface` so stop knows what to undo. Operator override via `EnvironmentFile=-/etc/default/jackbridge`.
+- **Mac** (`installer/jb-detect-net-iface`): 3-tier — `NetworkInterface` config.plist override > direct (169.254.x) > any wired iface > Wi-Fi as last resort. `installer/jackbridge-pin-route` runs as root via the new `com.jackbridge.route` system LaunchDaemon. The daemon is a watcher: `jackbridge-route-watcher` runs the pin, then `exec /usr/bin/notifyutil -1 com.apple.system.config.network_change` and blocks until SystemConfiguration broadcasts a network-state change. KeepAlive restarts the wrapper → re-pin. Effect: replug ethernet after boot and the route follows within a few seconds. `WatchPaths` on `config.plist` covers operator edits.
+
+### 4.4 pi/install.sh + pistomp-arch wiring — **DONE**
+- `pi/install.sh` — idempotent installer for the service unit + helpers. Drops scripts into `/usr/local/libexec/jackbridge/`, unit into `/usr/lib/systemd/system/`, `daemon-reload`s. Does **not** `systemctl enable` — the LCD UI owns enable/disable.
+- `pistomp-arch/config.sh` — added `JACKROUTER_REPO` + `JACKROUTER_REF` so the image build clones the JackRouter repo at a pinned ref.
+- `pistomp-arch/scripts/07-services.sh` — clones JackRouter to `/tmp/jackrouter` during image build, runs `bash $JACKROUTER_SRC/pi/install.sh`, cleans up. No state crosses into the image except what `pi/install.sh` writes.
+
+### 4.5 pi-stomp UI hand-off — **SPECIFIED, not yet implemented in pi-stomp**
+`../pi-stomp/JACKBRIDGE_RECORDING.md` is the contract document for the pi-stomp coding agent. Covers: extending `ui/wifi_menu.py` to prepend a "Wired Connection" row when `/sys/class/net/end0/carrier == 1`; new `ui/ethernet_menu.py` sub-screen showing IP / Sample Rate / Period / xrun 1m/5m/15m buckets + Enable/Disable toggle; `modalapi/ethernet/manager.py` for carrier polling and xrun file reading; `EthernetCableGlyph` in `uilib/font_with_glyphs.py`. Frames netadapter behind a single `systemctl start|stop pi-stomp-jackbridge.service` call so the UI never has to know netJACK2 exists.
+
+**Phase 4 done when:** the pi-stomp UI lands. End-to-end audio at 4-in/2-out 48k/128 with the watcher auto-recovering from cable replug is already verified.
+
+---
+
 ## Totals & risk
 
 | Phase | Effort |
@@ -179,7 +221,7 @@ Required secrets are documented at the top of `release.yml`. The `/usr/local` sh
 
 ### What this plan deliberately does not include
 
-- **Higher channel counts.** Stays 2-in / 4-out. Out of scope for the pi-stomp use case; revisit only if asked.
+- **Higher channel counts.** Stays 4-in / 2-out. Out of scope for the pi-stomp use case; revisit only if asked.
 - **Higher sample rates.** Stays 48 kHz. Same reasoning.
 - **JACK-graph patchability** (i.e., making CoreAudio apps visible as JACK ports). The "out of JACK graph scope" property is fine here. Fixing it is a ~10-day rearchitecture for zero benefit in this topology.
 - **Multi-instance support.** The commented-out `NUM_INSTANCES` scaffolding stays commented.
