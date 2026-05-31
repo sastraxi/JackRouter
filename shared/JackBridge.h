@@ -42,7 +42,7 @@
 // IPC contract version. Bump on every shm layout change (sizes, offsets, field
 // types, sync semantics). Phase 2.3 wires the handshake — daemon and HAL both
 // refuse to attach on mismatch.
-#define JACKBRIDGE_PROTOCOL_VERSION 3
+#define JACKBRIDGE_PROTOCOL_VERSION 4
 
 // shm sync fields are std::atomic<uint64_t> placed by reinterpret_cast over the
 // mapped region. Both targets must agree that the type is lock-free and the
@@ -85,8 +85,11 @@ static_assert(std::atomic<uint64_t>::is_always_lock_free,
 
 typedef float sample_t;
 #define AUDIO_SAMPLE_SIZE (sizeof(sample_t))
-#define NUM_INPUT_STREAMS   1
-#define NUM_OUTPUT_STREAMS  2
+// pi-stomp recording layout: 4-in (HW capture L/R + mod-host wet L/R) / 2-out.
+// Two stereo input streams, one stereo output stream. MAX_STREAMS stays 2 —
+// shm region size is unchanged, only the direction split moves.
+#define NUM_INPUT_STREAMS   2
+#define NUM_OUTPUT_STREAMS  1
 #define MAX_STREAMS         2
 #define MAX_CHANNELS        ((MAX_STREAMS)*2)
 #define NUM_INSTANCES       1

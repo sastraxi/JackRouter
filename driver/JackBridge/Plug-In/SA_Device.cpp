@@ -967,9 +967,10 @@ bool	SA_Device::Stream_HasProperty(AudioObjectID inObjectID, pid_t inClientPID, 
 		case kAudioStreamPropertyPhysicalFormat:
 		case kAudioStreamPropertyAvailableVirtualFormats:
 		case kAudioStreamPropertyAvailablePhysicalFormats:
+		case kAudioObjectPropertyElementName:
 			theAnswer = true;
 			break;
-			
+
 		default:
 			theAnswer = SA_Object::HasProperty(inObjectID, inClientPID, inAddress);
 			break;
@@ -1045,6 +1046,10 @@ UInt32	SA_Device::Stream_GetPropertyDataSize(AudioObjectID inObjectID, pid_t inC
 		case kAudioStreamPropertyAvailableVirtualFormats:
 		case kAudioStreamPropertyAvailablePhysicalFormats:
 			theAnswer = 2 * sizeof(AudioStreamRangedDescription);
+			break;
+
+		case kAudioObjectPropertyElementName:
+			theAnswer = sizeof(CFStringRef);
 			break;
 
 		default:
@@ -1206,6 +1211,31 @@ void	SA_Device::Stream_GetPropertyData(AudioObjectID inObjectID, pid_t inClientP
 			
 			//	report how much we wrote
 			outDataSize = theNumberItemsToFetch * sizeof(AudioStreamRangedDescription);
+			break;
+
+		case kAudioObjectPropertyElementName:
+			//	Per-channel labels surfaced to DAWs. mElement is 1-based within
+			//	the stream (1 = first channel, 2 = second). Layout: 4 inputs
+			//	[In1, In2, ModOut1, ModOut2] across 2 stereo input streams,
+			//	2 outputs [Out1, Out2] in 1 stereo output stream.
+			{
+				ThrowIf(inDataSize < sizeof(CFStringRef), CAException(kAudioHardwareBadPropertySizeError), "SA_Device::Stream_GetPropertyData: not enough space for the return value of kAudioObjectPropertyElementName for the stream");
+				int streamIdx = getStreamID(inObjectID);
+				bool isInput = IsInputStreamID(inObjectID);
+				UInt32 ch = inAddress.mElement;
+				CFStringRef name = CFSTR("");
+				if (isInput) {
+					if (streamIdx == 0 && ch == 1) name = CFSTR("In1");
+					else if (streamIdx == 0 && ch == 2) name = CFSTR("In2");
+					else if (streamIdx == 1 && ch == 1) name = CFSTR("ModOut1");
+					else if (streamIdx == 1 && ch == 2) name = CFSTR("ModOut2");
+				} else {
+					if (streamIdx == 0 && ch == 1) name = CFSTR("Out1");
+					else if (streamIdx == 0 && ch == 2) name = CFSTR("Out2");
+				}
+				*reinterpret_cast<CFStringRef*>(outData) = (CFStringRef)CFRetain(name);
+				outDataSize = sizeof(CFStringRef);
+			}
 			break;
 
 		default:
