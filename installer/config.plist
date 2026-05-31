@@ -9,9 +9,6 @@
 
     Values shown are the built-in defaults. Removing a key falls back to the
     default; deleting the whole file is equivalent to all defaults.
-
-    Schema is wired up in Phase 3.4 — until then this file is informational
-    only and edits are not yet read by the daemon or jackd-launch.
 -->
 <plist version="1.0">
 <dict>
@@ -33,8 +30,22 @@
     <key>SampleRate</key>
     <integer>48000</integer>
 
+    <!-- jackd backend period in frames (`-p`). MUST match the Pi-side jackd
+         period — netJACK2's adaptive resampler chokes on cycle 1 with off-by-
+         one `WriteResample error` when periods differ, then thrashes. pi-stomp
+         ships /etc/jackdrc with `-p 64`. -->
     <key>PeriodFrames</key>
-    <integer>128</integer>
+    <integer>64</integer>
+
+    <!-- Daemon-side safety margin (in frames) added on top of `PeriodFrames`
+         when projecting read/write head positions against the HAL's anchor.
+         Absorbs scheduling jitter so the HAL never reads partially-written
+         data. Measured envelope on Apple Silicon at 48k/64 is ±~10 frames
+         steady-state with worst-case excursions up to ~75 frames during
+         load transients — JitterFrames=64 leaves comfortable headroom.
+         If the daemon logs guarantee-violation lines, raise this. -->
+    <key>JitterFrames</key>
+    <integer>64</integer>
 
     <!-- jackd realtime priority. 75 is load-bearing per Spike B; lowering
          this will cause xruns on any non-idle Mac. Exposed for debugging,

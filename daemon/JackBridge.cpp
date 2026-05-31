@@ -46,6 +46,29 @@ SOFTWARE.
 // pass to the main thread via SIGUSR1.
 static pthread_t g_main_thread;
 static std::atomic<bool> g_wire_dirty{false};
+
+// Daemon-side safety margin in frames, read once at startup from config.plist.
+// Used by the projection logic to keep the daemon's read/write heads inside
+// the HAL's window with enough slack to absorb scheduling jitter. Default 64;
+// tune via config.plist `JitterFrames` if guarantee-violation lines appear.
+static long g_jitter_frames = 64;
+
+// Reads a long-valued key from /Library/Application Support/JackBridge/config.plist
+// via PlistBuddy. Returns `def` if the file/key is missing or unparseable.
+// Runs once at startup; popen cost is irrelevant outside the realtime path.
+static long read_config_long(const char* key, long def) {
+    char cmd[512];
+    snprintf(cmd, sizeof cmd,
+        "/usr/libexec/PlistBuddy -c 'Print :%s' "
+        "'/Library/Application Support/JackBridge/config.plist' 2>/dev/null",
+        key);
+    FILE* f = popen(cmd, "r");
+    if (!f) return def;
+    long val = def;
+    if (fscanf(f, "%ld", &val) != 1) val = def;
+    pclose(f);
+    return val;
+}
 #ifdef _WITH_MIDI_BRIDGE_
 #include <rtmidi/RtMidi.h>
 #define MAX_MIDI_PORTS 256
@@ -97,13 +120,7 @@ public:
         // pi restarts.
         jack_set_port_registration_callback(client, _port_registration_callback, this);
 
-        // For DEBUG
-        lastHostTime = 0;
-        struct mach_timebase_info theTimeBaseInfo;
-        mach_timebase_info(&theTimeBaseInfo);
-        double theHostClockFrequency = theTimeBaseInfo.denom / theTimeBaseInfo.numer;
-        theHostClockFrequency *= 1000000000.0;
-        HostTicksPerFrame = theHostClockFrequency / SampleRate;
+        lastTraceFrame = 0;
         JB_LOG_INFO(jb_log_daemon(),
             "JackBridge#%u: start with samplerate=%d Hz, buffersize=%u bytes",
             instance, SampleRate, (unsigned)BufSize);
@@ -340,9 +357,7 @@ private:
     }
 
     bool isActive, isSyncMode, isVerbose;
-    bool showmsg;
-    uint64_t lastHostTime;
-    double HostTicksPerFrame;
+    uint64_t lastTraceFrame;
     int64_t ncalls;
     char** nameAin;
     char** nameAout;
@@ -519,35 +534,33 @@ private:
     }
 #endif // _WITH_MIDI_BRIDGE_
 
+    // Drift trace. Under Config B both sides share the CoreAudio host clock, so
+    // ring fill should oscillate within a small bounded range forever. A
+    // monotonic trend over minutes means the daemon (JACK side) and HAL
+    // (CoreAudio IO proc) aren't actually on the same clock — Config B is
+    // broken (jackd backend pointed at a different device than the DAW's
+    // output, aggregate device with two crystals, etc.). See
+    // docs/architecture.md.
+    //
+    // Tail with:
+    //   log stream --predicate 'subsystem == "com.jackbridge" && category == "shm"'
+    //
+    // One line every ~5s — bounded cost; os_log on the RT path is the same
+    // pre-existing FIXME flagged elsewhere in this file.
     void check_progress() {
-#if 0
-        if (isVerbose && ((ncalls++) % 500) == 0) {
-            printf("JackBridge#%d: FRAME %llu : Write0: %llu Read0: %llu Write1: %llu Read0: %llu\n",
-                 instance, FrameNumber,
-                 shmWriteFrameNumber[0]->load(std::memory_order_acquire),
-                 shmReadFrameNumber[0]->load(std::memory_order_acquire),
-                 shmWriteFrameNumber[1]->load(std::memory_order_acquire),
-                 shmReadFrameNumber[1]->load(std::memory_order_acquire));
-        }
-#endif
+        uint64_t in_consumed  = shmReadFrameNumber[0]->load(std::memory_order_acquire);
+        uint64_t out_produced = shmWriteFrameNumber[0]->load(std::memory_order_acquire);
+        int64_t  in_fill  = (int64_t)FrameNumber   - (int64_t)in_consumed;
+        int64_t  out_fill = (int64_t)out_produced  - (int64_t)FrameNumber;
 
-        int diff = shmWriteFrameNumber[0]->load(std::memory_order_acquire) - FrameNumber;
-        int interval = (mach_absolute_time() - lastHostTime) / HostTicksPerFrame;
-        if (showmsg) {
-            if ((diff >= (STRBUFNUM/2))||(interval >= BufSize*2))  {
-                if (isVerbose) {
-                    printf("WARNING: miss synchronization detected at FRAME %llu (diff=%d, interval=%d)\n",
-                        FrameNumber, diff, interval);
-                    fflush(stdout);
-                }
-                showmsg = false;
-            }
-        } else {
-            if (diff < (STRBUFNUM/2)) {
-                showmsg = true;
-            }
+        uint64_t period = (uint64_t)SampleRate * 5;
+        if (period && FrameNumber / period != lastTraceFrame / period) {
+            JB_LOG_INFO(jb_log_shm(),
+                "drift trace frame=%llu in_fill=%lld out_fill=%lld",
+                (unsigned long long)FrameNumber,
+                (long long)in_fill, (long long)out_fill);
         }
-        lastHostTime = mach_absolute_time();
+        lastTraceFrame = FrameNumber;
     }
 };
 
@@ -571,6 +584,11 @@ main(int argc, char** argv)
     // Capture before any JACK threads spawn so the port-registration callback
     // can pthread_kill us awake.
     g_main_thread = pthread_self();
+
+    // Read tunables from config.plist before any RT code runs.
+    g_jitter_frames = read_config_long("JitterFrames", 64);
+    if (g_jitter_frames < 0) g_jitter_frames = 64;
+    JB_LOG_DEFAULT(jb_log_daemon(), "config: JitterFrames=%ld", g_jitter_frames);
 
     while ((ch = getopt(argc, argv, "vi:o:")) != -1) {
         switch (ch) {

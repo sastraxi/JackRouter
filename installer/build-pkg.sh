@@ -70,9 +70,15 @@ xcodebuild "${XCBUILD_ARGS[@]}" -target JackBridgePlugIn clean build >/dev/null
 xcodebuild "${XCBUILD_ARGS[@]}" -target JackBridged build >/dev/null
 xcodebuild "${XCBUILD_ARGS[@]}" -target jb-detect-builtin build >/dev/null
 
+# rmshm is a 5-line shm_unlink utility — not worth its own Xcode target.
+# Shipped so users can recover after a JACKBRIDGE_PROTOCOL_VERSION bump
+# without bootcycling agents by hand.
+clang -O2 -o "$BUILD/xcode/jb-rmshm" "$ROOT/tools/rmshm.c"
+
 cp -R "$BUILD/xcode/JackBridgePlugIn.driver" "$STAGING/Library/Audio/Plug-Ins/HAL/"
 cp    "$BUILD/xcode/JackBridged"             "$STAGING/Library/Application Support/JackBridge/"
 cp    "$BUILD/xcode/jb-detect-builtin"       "$STAGING/Library/Application Support/JackBridge/"
+cp    "$BUILD/xcode/jb-rmshm"                "$STAGING/Library/Application Support/JackBridge/"
 install -m 0755 "$INSTALLER/jackd-launch"          "$STAGING/Library/Application Support/JackBridge/jackd-launch"
 install -m 0755 "$INSTALLER/jb-detect-net-iface"      "$STAGING/Library/Application Support/JackBridge/jb-detect-net-iface"
 install -m 0755 "$INSTALLER/jackbridge-pin-route"     "$STAGING/Library/Application Support/JackBridge/jackbridge-pin-route"

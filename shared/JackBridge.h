@@ -42,7 +42,7 @@
 // IPC contract version. Bump on every shm layout change (sizes, offsets, field
 // types, sync semantics). Phase 2.3 wires the handshake — daemon and HAL both
 // refuse to attach on mismatch.
-#define JACKBRIDGE_PROTOCOL_VERSION 4
+#define JACKBRIDGE_PROTOCOL_VERSION 5
 
 // shm sync fields are std::atomic<uint64_t> placed by reinterpret_cast over the
 // mapped region. Both targets must agree that the type is lock-free and the
@@ -74,10 +74,17 @@ static_assert(std::atomic<uint64_t>::is_always_lock_free,
 // 0x0128      :    Driver status
 // 0x0130      :    Protocol version (handshake — refuse-on-mismatch)
 // 0x0138      :    Daemon alive heartbeat counter
-// 0x0180      :    Current Frame Number(coreAudio read)
-// 0x0188      :    Current Frame Number(coreAudio write)
-// 0x0190      :    Current Frame Number(coreAudio read)
-// 0x0198      :    Current Frame Number(coreAudio write)
+// 0x0140      :    HAL anchor seqlock counter (even=stable, odd=write in progress)
+// 0x0148      :    HAL anchor mCurrentTime.mHostTime
+// 0x0150      :    HAL anchor mCurrentTime.mSampleTime
+// 0x0158      :    HAL input read head (mInputTime.mSampleTime, frames)
+// 0x0160      :    HAL output write head (mOutputTime.mSampleTime, frames)
+// 0x0168      :    HAL current cycle nframes
+// 0x0170      :    HAL current sample rate
+// 0x0180      :    Current Frame Number(coreAudio read, stream 0)
+// 0x0188      :    Current Frame Number(coreAudio write, stream 0)
+// 0x0190      :    Current Frame Number(coreAudio read, stream 1)
+// 0x0198      :    Current Frame Number(coreAudio write, stream 1)
 // 0x10000     : Upstream buffer #0 (Driver -> Application)
 // 0x18000     : Downstream buffer #0 (Application -> Driver)
 // 0x20000     : Upstream buffer #0 (Driver -> Application)
@@ -124,6 +131,17 @@ protected:
 #define JB_DRV_STATUS_STARTED   2
     std::atomic<uint64_t> *shmProtocolVersion;
     std::atomic<uint64_t> *shmDaemonAlive;
+    // HAL-authoritative anchor — published by the HAL IO thread once per cycle
+    // under a seqlock, consumed by the daemon to project its read/write heads
+    // into the HAL's current window. Step 2 of the sync rework. Fields are
+    // valid iff shmHalAnchorSeq is even on both reads of a snapshot.
+    std::atomic<uint64_t> *shmHalAnchorSeq;
+    std::atomic<uint64_t> *shmHalAnchorHostTime;
+    std::atomic<uint64_t> *shmHalAnchorSampleTime;
+    std::atomic<uint64_t> *shmHalInputReadHead;
+    std::atomic<uint64_t> *shmHalOutputWriteHead;
+    std::atomic<uint64_t> *shmHalNFrames;
+    std::atomic<uint64_t> *shmHalSampleRate;
     std::atomic<uint64_t> *shmReadFrameNumber[MAX_STREAMS];
     std::atomic<uint64_t> *shmWriteFrameNumber[MAX_STREAMS];
 
@@ -195,11 +213,21 @@ protected:
         shmDriverStatus = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+0x128);
         shmProtocolVersion = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+0x130);
         shmDaemonAlive = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+0x138);
+        shmHalAnchorSeq        = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+0x140);
+        shmHalAnchorHostTime   = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+0x148);
+        shmHalAnchorSampleTime = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+0x150);
+        shmHalInputReadHead    = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+0x158);
+        shmHalOutputWriteHead  = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+0x160);
+        shmHalNFrames          = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+0x168);
+        shmHalSampleRate       = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+0x170);
 
         for(int i=0; i<MAX_STREAMS; i++) {
             buf_up[i]   = (sample_t*)(shm_base + STRBUF_UP(i));
             buf_down[i] = (sample_t*)(shm_base + STRBUF_DOWN(i));
-            shmReadFrameNumber[i] = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+0x180);
+            // +i*0x10 was missing on shmReadFrameNumber, aliasing stream 1 to
+            // stream 0 — a latent bug that didn't bite because the daemon only
+            // writes stream 0 today.
+            shmReadFrameNumber[i]  = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+0x180+i*0x10);
             shmWriteFrameNumber[i] = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+0x188+i*0x10);
         }
         

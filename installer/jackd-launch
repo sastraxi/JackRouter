@@ -13,6 +13,14 @@
 
 set -e
 
+# jack_lsp / jack_load / any jack_* CLI tool default to JackNullOption, which
+# auto-spawns a default-config jackd against whatever CoreAudio considers the
+# system default output (often a USB interface at 44.1k/256). That stray jackd
+# beats the real one to the "default" server slot, triggers a microphone
+# permission prompt for any device with input streams, and produces wrong
+# sample rate / buffer. Suppress it process-tree-wide.
+export JACK_NO_START_SERVER=1
+
 SUPPORT="/Library/Application Support/JackBridge"
 CONFIG="$SUPPORT/config.plist"
 DETECT="$SUPPORT/jb-detect-builtin"
@@ -32,12 +40,17 @@ if [ -n "$ver" ] && ! printf '%s\n%s\n' "$JACK_MIN_VERSION" "$ver" | sort -V -C;
     exit 1
 fi
 
-# Read ClockDeviceUID from config.plist; empty string and missing key both
-# return empty, both of which fall through to auto-detect.
+# Read ClockDeviceUID and PeriodFrames from config.plist; empty/missing both
+# return empty. ClockDeviceUID falls through to auto-detect; PeriodFrames
+# falls back to 64 (must match the Pi-side jackd period — see comment by the
+# jackd invocation below).
 CLOCK_UID=""
+PERIOD_FRAMES=""
 if [ -f "$CONFIG" ]; then
     CLOCK_UID=$(/usr/libexec/PlistBuddy -c "Print :ClockDeviceUID" "$CONFIG" 2>/dev/null || true)
+    PERIOD_FRAMES=$(/usr/libexec/PlistBuddy -c "Print :PeriodFrames" "$CONFIG" 2>/dev/null || true)
 fi
+PERIOD_FRAMES="${PERIOD_FRAMES:-64}"
 
 if [ -z "$CLOCK_UID" ]; then
     if [ ! -x "$DETECT" ]; then
@@ -50,7 +63,7 @@ if [ -z "$CLOCK_UID" ]; then
     }
 fi
 
-echo "jackd-launch: using ClockDeviceUID=$CLOCK_UID" >&2
+echo "jackd-launch: using ClockDeviceUID=$CLOCK_UID PeriodFrames=$PERIOD_FRAMES" >&2
 
 # `-P <uid>` (playback-only) rather than `-d ~:<uid>` (duplex): the typical
 # built-in output device has no input streams, so duplex silently falls back
@@ -58,7 +71,11 @@ echo "jackd-launch: using ClockDeviceUID=$CLOCK_UID" >&2
 # aggregate creation, and (worse) opens the default microphone, triggering
 # repeated TCC prompts on every KeepAlive restart. JackBridge's actual audio
 # I/O flows through shm + netJACK2, so the clock device only needs playback.
-"$JACKD" -R -P 75 -d coreaudio -P "$CLOCK_UID" -r 48000 -p 128 &
+# -p <PERIOD_FRAMES> must match the Pi-side jackd period (pi-stomp's stock
+# /etc/jackdrc uses `-p 64`). netJACK2's adaptive resampler chokes on cycle 1
+# with off-by-one `WriteResample error` when periods differ, then thrashes.
+# Sourced from config.plist `PeriodFrames` (default 64).
+"$JACKD" -R -P 75 -d coreaudio -P "$CLOCK_UID" -r 48000 -p "$PERIOD_FRAMES" &
 JACKD_PID=$!
 
 # Wait for jackd to be ready (jack_lsp succeeds once the server is up).

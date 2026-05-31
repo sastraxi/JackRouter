@@ -82,7 +82,22 @@ SA_Device::SA_Device(AudioObjectID inObjectID, UInt32 instance)
 	mDriverStatus(JB_DRV_STATUS_INIT),
 	mDeviceIsAlive(true),
 	mLastDaemonAlive(0),
-	mLastDaemonAliveHostTime(0)
+	mLastDaemonAliveHostTime(0),
+	mJitterCycleCount(0),
+	mJitterInSampleCount(0),
+	mJitterOutSampleCount(0),
+	mJitterInLeadMin(INT64_MAX),
+	mJitterInLeadMax(INT64_MIN),
+	mJitterInLeadSum(0),
+	mJitterOutLeadMin(INT64_MAX),
+	mJitterOutLeadMax(INT64_MIN),
+	mJitterOutLeadSum(0),
+	mJitterLastNFrames(0),
+	mJitterLastHostTime(0),
+	mInputUnderrunCount(0),
+	mOutputOverrunCount(0),
+	mInputUnderrunMax(0),
+	mOutputOverrunMax(0)
 {
 	for(int i=0; i<kNumberOfInputSubObjects; i++)
     {
@@ -119,7 +134,11 @@ void	SA_Device::Activate()
     //  calculate the host ticks per frame
     struct mach_timebase_info theTimeBaseInfo;
     mach_timebase_info(&theTimeBaseInfo);
-    Float64 theHostClockFrequency = theTimeBaseInfo.denom / theTimeBaseInfo.numer;
+    // Float64 cast is load-bearing: denom/numer are uint32_t. On Apple Silicon
+    // numer=125, denom=3 → integer division yields 0, then ×1e9 stays 0, and
+    // gDevice_HostTicksPerFrame ends up 0.0 — which silently disables every
+    // host-time→frame conversion downstream (jitter measurement, etc.).
+    Float64 theHostClockFrequency = (Float64)theTimeBaseInfo.denom / (Float64)theTimeBaseInfo.numer;
     theHostClockFrequency *= 1000000000.0;
     gDevice_HostTicksPerFrame = theHostClockFrequency / mSampleRateShadow;
 }
@@ -1430,6 +1449,8 @@ void	SA_Device::GetZeroTimeStamp(Float64& outSampleTime, UInt64& outHostTime, UI
         mLastDaemonAliveHostTime = now;
         if (!mDeviceIsAlive.load(std::memory_order_acquire)) {
             mDeviceIsAlive.store(true, std::memory_order_release);
+            JB_LOG_INFO(jb_log_driver(),
+                "daemon heartbeat resumed — flipping DeviceIsAlive=1");
             AudioObjectPropertyAddress addr = {
                 kAudioDevicePropertyDeviceIsAlive,
                 kAudioObjectPropertyScopeGlobal,
@@ -1516,7 +1537,133 @@ void	SA_Device::WillDoIOOperation(UInt32 inOperationID, bool& outWillDo, bool& o
 
 void	SA_Device::BeginIOOperation(UInt32 inOperationID, UInt32 inIOBufferFrameSize, const AudioServerPlugInIOCycleInfo& inIOCycleInfo)
 {
-	#pragma unused(inOperationID, inIOBufferFrameSize, inIOCycleInfo)
+	#pragma unused(inOperationID, inIOBufferFrameSize)
+	// Step 1 of sync rework: measure scheduling-jitter envelope. CoreAudio gives
+	// us three timestamps per cycle on the same host clock — mInputTime is when
+	// the input frame was captured, mOutputTime is when the output frame will
+	// play, mCurrentTime is when this callback actually fired. The deltas tell
+	// us how much lead/lag the daemon needs to project, and how stable that
+	// number is cycle-to-cycle.
+	//
+	// Per-op sampling: mInputTime is only meaningful during ReadInput ops, and
+	// mOutputTime only during WriteMix ops — the other field may read as 0 or
+	// stale. Sample each side only when its op fires. UInt64 subtraction would
+	// underflow when the "future" timestamp is smaller; cast to SInt64 first.
+	if (gDevice_HostTicksPerFrame <= 0.0) return;
+
+	SInt64 nowTicks = (SInt64)inIOCycleInfo.mCurrentTime.mHostTime;
+	if (inOperationID == kAudioServerPlugInIOOperationReadInput) {
+		SInt64 inLead = (SInt64)((Float64)(nowTicks - (SInt64)inIOCycleInfo.mInputTime.mHostTime)
+		                         / gDevice_HostTicksPerFrame);
+		if (inLead < mJitterInLeadMin) mJitterInLeadMin = inLead;
+		if (inLead > mJitterInLeadMax) mJitterInLeadMax = inLead;
+		mJitterInLeadSum += inLead;
+		mJitterInSampleCount++;
+	} else if (inOperationID == kAudioServerPlugInIOOperationWriteMix) {
+		SInt64 outLead = (SInt64)((Float64)((SInt64)inIOCycleInfo.mOutputTime.mHostTime - nowTicks)
+		                          / gDevice_HostTicksPerFrame);
+		if (outLead < mJitterOutLeadMin) mJitterOutLeadMin = outLead;
+		if (outLead > mJitterOutLeadMax) mJitterOutLeadMax = outLead;
+		mJitterOutLeadSum += outLead;
+		mJitterOutSampleCount++;
+	} else {
+		return;
+	}
+
+	// Count cycles by mCurrentTime change so the emit cadence is in cycles,
+	// not ops. (ReadInput + WriteMix per cycle would otherwise double-count.)
+	UInt64 cycleHostTime = inIOCycleInfo.mCurrentTime.mHostTime;
+	if (cycleHostTime == mJitterLastHostTime) return;
+	mJitterLastHostTime = cycleHostTime;
+	mJitterCycleCount++;
+	mJitterLastNFrames = inIOBufferFrameSize;
+
+	// Step 3: publish HAL anchor under a seqlock. Single writer (this thread,
+	// this per-cycle path), so the dance is: bump seq to odd, write fields,
+	// bump seq to even. The daemon reads seq twice around its snapshot and
+	// retries on odd / mismatch.
+	UInt64 seq = shmHalAnchorSeq->load(std::memory_order_relaxed) + 1;
+	shmHalAnchorSeq->store(seq, std::memory_order_release);
+	shmHalAnchorHostTime->store(inIOCycleInfo.mCurrentTime.mHostTime,
+	                            std::memory_order_relaxed);
+	shmHalAnchorSampleTime->store((UInt64)inIOCycleInfo.mCurrentTime.mSampleTime,
+	                              std::memory_order_relaxed);
+	shmHalInputReadHead->store((UInt64)inIOCycleInfo.mInputTime.mSampleTime,
+	                           std::memory_order_relaxed);
+	shmHalOutputWriteHead->store((UInt64)inIOCycleInfo.mOutputTime.mSampleTime,
+	                             std::memory_order_relaxed);
+	shmHalNFrames->store(inIOBufferFrameSize, std::memory_order_relaxed);
+	shmHalSampleRate->store(mSampleRateShadow, std::memory_order_relaxed);
+	shmHalAnchorSeq->store(seq + 1, std::memory_order_release);
+
+	// Step 4: guarantee check. Gate on heartbeat + non-zero daemon heads so
+	// the startup race (daemon hasn't written anything yet, HAL sampleTime
+	// already growing) doesn't dominate the count.
+	UInt64 daemonWrite = shmWriteFrameNumber[0]->load(std::memory_order_acquire);
+	UInt64 daemonRead  = shmReadFrameNumber[0]->load(std::memory_order_acquire);
+	bool daemonReady = mDeviceIsAlive.load(std::memory_order_acquire) &&
+	                   daemonWrite > 0 && daemonRead > 0;
+	if (daemonReady) {
+		UInt64 inputHead  = (UInt64)inIOCycleInfo.mInputTime.mSampleTime;
+		UInt64 outputHead = (UInt64)inIOCycleInfo.mOutputTime.mSampleTime;
+
+		// Input underrun: HAL is about to read frames [inputHead, inputHead+N)
+		// from the input ring; daemon must have written through at least
+		// inputHead+N. Shortfall is how many frames the daemon was behind.
+		if (daemonWrite < inputHead + inIOBufferFrameSize) {
+			SInt64 shortfall = (SInt64)(inputHead + inIOBufferFrameSize)
+			                 - (SInt64)daemonWrite;
+			mInputUnderrunCount++;
+			if (shortfall > mInputUnderrunMax) mInputUnderrunMax = shortfall;
+		}
+
+		// Output overrun: daemon's read head must not have passed the start
+		// of the block HAL is about to write. If it has, daemon read garbage
+		// from positions HAL hadn't filled yet.
+		if (daemonRead > outputHead) {
+			SInt64 overrun = (SInt64)daemonRead - (SInt64)outputHead;
+			mOutputOverrunCount++;
+			if (overrun > mOutputOverrunMax) mOutputOverrunMax = overrun;
+		}
+	}
+
+	// Emit ~every 5s. cycles_per_5s = SR*5/nframes. Skip if nframes unknown.
+	UInt64 cyclesPer5s = (inIOBufferFrameSize > 0)
+	                   ? (mSampleRateShadow * 5 / inIOBufferFrameSize)
+	                   : 0;
+	if (cyclesPer5s == 0 || mJitterCycleCount < cyclesPer5s) return;
+
+	// Per-direction means: ReadInput fires once per input stream per cycle and
+	// WriteMix once per output stream — divide by per-direction sample count,
+	// not cycle count, or means come out scaled by NUM_*_STREAMS.
+	SInt64 inMean  = (mJitterInSampleCount  > 0) ? mJitterInLeadSum  / (SInt64)mJitterInSampleCount  : 0;
+	SInt64 outMean = (mJitterOutSampleCount > 0) ? mJitterOutLeadSum / (SInt64)mJitterOutSampleCount : 0;
+	JB_LOG_INFO(jb_log_driver(),
+		"jitter nframes=%u cycles=%llu inLead{min=%lld mean=%lld max=%lld} outLead{min=%lld mean=%lld max=%lld}",
+		(unsigned)inIOBufferFrameSize, (unsigned long long)mJitterCycleCount,
+		(long long)mJitterInLeadMin, (long long)inMean, (long long)mJitterInLeadMax,
+		(long long)mJitterOutLeadMin, (long long)outMean, (long long)mJitterOutLeadMax);
+
+	// Guarantee tally — non-zero counts mean JitterFrames in config.plist is
+	// too small and the daemon's projection didn't stay inside HAL's window.
+	// Emitted at warn level when non-zero so a tuning loop can grep for it.
+	if (mInputUnderrunCount > 0 || mOutputOverrunCount > 0) {
+		JB_LOG_ERR(jb_log_driver(),
+			"guarantee MISS cycles=%llu inUnderrun{count=%llu maxShortfall=%lld} outOverrun{count=%llu maxAmount=%lld} — raise JitterFrames",
+			(unsigned long long)mJitterCycleCount,
+			(unsigned long long)mInputUnderrunCount, (long long)mInputUnderrunMax,
+			(unsigned long long)mOutputOverrunCount, (long long)mOutputOverrunMax);
+	} else {
+		JB_LOG_INFO(jb_log_driver(),
+			"guarantee OK cycles=%llu", (unsigned long long)mJitterCycleCount);
+	}
+
+	mJitterCycleCount = 0;
+	mJitterInSampleCount = 0; mJitterOutSampleCount = 0;
+	mJitterInLeadMin  = INT64_MAX; mJitterInLeadMax  = INT64_MIN; mJitterInLeadSum  = 0;
+	mJitterOutLeadMin = INT64_MAX; mJitterOutLeadMax = INT64_MIN; mJitterOutLeadSum = 0;
+	mInputUnderrunCount = 0; mInputUnderrunMax  = 0;
+	mOutputOverrunCount = 0; mOutputOverrunMax  = 0;
 }
 
 void	SA_Device::DoIOOperation(AudioObjectID inStreamObjectID, UInt32 inOperationID, UInt32 inIOBufferFrameSize, const AudioServerPlugInIOCycleInfo& inIOCycleInfo, void* ioMainBuffer, void* ioSecondaryBuffer)
@@ -1715,7 +1862,7 @@ void	SA_Device::PerformConfigChange(UInt64 inChangeAction, void* inChangeInfo)
         //  calculate the host ticks per frame
         struct mach_timebase_info theTimeBaseInfo;
         mach_timebase_info(&theTimeBaseInfo);
-        Float64 theHostClockFrequency = theTimeBaseInfo.denom / theTimeBaseInfo.numer;
+        Float64 theHostClockFrequency = (Float64)theTimeBaseInfo.denom / (Float64)theTimeBaseInfo.numer;
         theHostClockFrequency *= 1000000000.0;
         gDevice_HostTicksPerFrame = theHostClockFrequency / theNewSampleRate;
 	}

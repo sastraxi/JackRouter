@@ -198,6 +198,28 @@ private:
     UInt64                   gDevice_NumberTimeStamps;
     Float64                  gDevice_AnchorSampleTime;
     UInt64                   gDevice_AnchorHostTime;
+
+    // Cycle-jitter measurement. Owned by the IO thread, no locking. Step 1 of
+    // the HAL-authoritative-anchor design (PLAN, sync rework) — measure the
+    // envelope of mCurrentTime→mInputTime and mOutputTime→mCurrentTime in
+    // frames so the daemon-side safety margin can be chosen from evidence
+    // rather than guessed. Emit one summary line every ~5s, then reset.
+    UInt64                   mJitterCycleCount;
+    UInt64                   mJitterInSampleCount, mJitterOutSampleCount;
+    SInt64                   mJitterInLeadMin, mJitterInLeadMax;
+    SInt64                   mJitterInLeadSum;
+    SInt64                   mJitterOutLeadMin, mJitterOutLeadMax;
+    SInt64                   mJitterOutLeadSum;
+    UInt32                   mJitterLastNFrames;
+    UInt64                   mJitterLastHostTime;
+
+    // Guarantee-violation tally. Counts the cycles where the daemon's
+    // published write head was behind the HAL's input read window (input
+    // underrun → crackle) or its read head ran past the HAL's output write
+    // head (output overrun). Worst shortfall in frames is the value to size
+    // JitterFrames against — see config.plist. Step 4 of sync rework.
+    UInt64                   mInputUnderrunCount, mOutputOverrunCount;
+    SInt64                   mInputUnderrunMax, mOutputOverrunMax;
 };
 
 #endif	//	__SA_Device_h__
