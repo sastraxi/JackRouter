@@ -1,0 +1,72 @@
+#!/usr/bin/env python3
+"""Tails `journalctl -u jack` for netadapter ringbuffer xrun events and
+maintains a bounded list of Unix-epoch timestamps in the file passed as
+argv[1].
+
+Contract (mirrored in ../pi-stomp/JACKBRIDGE_RECORDING.md): one timestamp per
+line, sub-second precision, file truncated on service start (handled by the
+shell caller, not here), entries older than 15 min discarded on each append,
+atomic rewrite via tempfile + rename so the UI side never sees a torn file.
+"""
+
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import time
+
+WINDOW_SEC = 900
+
+# JACK2 netadapter ringbuffer underrun/overrun log lines. Both directions
+# count as xruns from the user's perspective.
+PATTERN = re.compile(r"JackRingBuffer::(Read|Write)\b.*\b(producer|consumer) too slow")
+
+
+def trim_and_append(path: str, now: float) -> None:
+    try:
+        with open(path) as f:
+            kept = [line for line in f if line.strip() and float(line) >= now - WINDOW_SEC]
+    except FileNotFoundError:
+        kept = []
+    kept.append(f"{now:.3f}\n")
+
+    dirpath = os.path.dirname(path) or "."
+    fd, tmp = tempfile.mkstemp(dir=dirpath, prefix=".xruns-")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.writelines(kept)
+        os.rename(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        finally:
+            raise
+
+
+def main() -> int:
+    if len(sys.argv) != 2:
+        print("usage: jackbridge-xrun-watcher <path-to-xrun-file>", file=sys.stderr)
+        return 2
+    path = sys.argv[1]
+
+    # -n 0: only new lines from now on; we don't want xruns from a previous
+    # session showing up after a service restart.
+    proc = subprocess.Popen(
+        ["journalctl", "-u", "jack", "-f", "-o", "cat", "-n", "0"],
+        stdout=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    try:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            if PATTERN.search(line):
+                trim_and_append(path, time.time())
+    finally:
+        proc.terminate()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

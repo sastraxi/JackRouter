@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Brings up netadapter as a client of the stock pi-stomp jackd, wires the
+# 4-in/2-out graph for the JackBridge Mac driver, and execs the xrun watcher
+# as the service's long-running foreground process.
+set -euo pipefail
+
+XRUN_FILE=/tmp/pi-stomp-jackbridge.xruns
+WATCHER=/usr/local/libexec/jackbridge/jackbridge-xrun-watcher
+
+# Fresh file on every service start (contract documented in
+# ../pi-stomp/JACKBRIDGE_RECORDING.md).
+: > "$XRUN_FILE"
+
+# Default multicast group; routing was pinned to end0 by ExecStartPre.
+#
+# netadapter port labels are slave-local (see pi-stomp.md:77):
+#   playback_* = TO master  (audio we send to the Mac)  → -P
+#   capture_*  = FROM master (audio we receive from the Mac) → -C
+# We want 4 channels pi→Mac (HW caps + mod-host wet) and 2 channels Mac→pi.
+jack_load netadapter -i "-C 2 -P 4"
+
+# Beat for port registration to settle before we connect.
+sleep 0.5
+
+# 1/2: raw hardware capture → first stereo pair on the Mac (In1/In2).
+jack_connect system:capture_1 netadapter:playback_1 || true
+jack_connect system:capture_2 netadapter:playback_2 || true
+
+# 3/4: post-mod-host wet feed → second stereo pair (ModOut1/ModOut2). Port
+# naming varies across mod-host configurations; first-match wins. The grep
+# checks `jack_lsp -p` output ("port\n\tproperties: output,") so we only
+# accept source ports — guards against accidentally picking an input port
+# with a similar name and feeding jack_connect a sink-to-sink pair.
+wire_wet() {
+    local dst=$1; shift
+    local sources
+    sources=$(jack_lsp -p 2>/dev/null | awk '/^[^ \t]/{p=$0} /properties:.*output/{print p}')
+    for src in "$@"; do
+        if grep -qxF "$src" <<< "$sources"; then
+            jack_connect "$src" "$dst" || true
+            return
+        fi
+    done
+    echo "jackbridge-pi-up: no mod-host wet source found for $dst" >&2
+}
+wire_wet netadapter:playback_3 mod-monitor:out_1 mod-host:monitor-out_1
+wire_wet netadapter:playback_4 mod-monitor:out_2 mod-host:monitor-out_2
+
+# Mac return → summed into system:playback alongside mod-host's existing wiring.
+jack_connect netadapter:capture_1 system:playback_1 || true
+jack_connect netadapter:capture_2 system:playback_2 || true
+
+exec "$WATCHER" "$XRUN_FILE"

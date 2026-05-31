@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Best-effort teardown. The watcher is reaped by systemd's normal SIGTERM
+# delivery; here we only need to detach netadapter from the stock jackd so
+# mod-host stops paying the encode/decode cost.
+jack_unload netadapter 2>/dev/null || true
