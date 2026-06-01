@@ -6,6 +6,12 @@ Requires=jack.service
 After=jack.service mod-host.service
 # Not WantedBy anything — the LCD UI enables/disables on demand.
 
+# Start-limit lives in [Unit] per systemd >=230. See [Service] Restart= for
+# the rationale; if we restart 5 times in 5 minutes the unit goes into
+# "failed" state until manual reset-failed (or the LCD UI re-enables it).
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
 [Service]
 Type=simple
 User=pistomp
@@ -40,7 +46,21 @@ ExecStop=/usr/local/libexec/jackbridge/jackbridge-pi-down
 ExecStopPost=+/usr/local/libexec/jackbridge/jackbridge-unpin-route
 
 TimeoutStartSec=10
-Restart=no
+
+# Storm-abort + auto-restart. jackbridge-xrun-watcher exits 75 (EX_TEMPFAIL)
+# when it sees an xrun storm — that's almost always the Mac-side HAL reload /
+# SHM create / daemon start transient leaking through netJACK2 and growing
+# the netadapter slip ring monotonically (see CLOCK_WARS.md). Restarting on
+# the pi side brings netadapter up fresh after the Mac has settled, which
+# avoids permanently sitting at a doubled ring size with bigger latency.
+#
+# StartLimitBurst/IntervalSec: if we fail to recover after 5 restarts in
+# 5 minutes the unit goes into "failed" and won't restart until manual
+# `systemctl reset-failed pi-stomp-jackbridge` (or the LCD UI re-enables
+# the feature, which also clears the failure). This is the "give up loudly"
+# fallback so we don't hot-loop forever on a genuinely broken setup.
+Restart=on-failure
+RestartSec=2
 
 [Install]
 # Intentionally no WantedBy — this is on-demand only.

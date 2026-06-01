@@ -42,10 +42,10 @@
          Absorbs scheduling jitter so the HAL never reads partially-written
          data. Measured envelope on Apple Silicon at 48k/64 is ±~10 frames
          steady-state with worst-case excursions up to ~75 frames during
-         load transients — JitterFrames=64 leaves comfortable headroom.
+         load transients — JitterFrames=128 leaves comfortable headroom.
          If the daemon logs guarantee-violation lines, raise this. -->
     <key>JitterFrames</key>
-    <integer>64</integer>
+    <integer>128</integer>
 
     <!-- jackd realtime priority. 75 is load-bearing per Spike B; lowering
          this will cause xruns on any non-idle Mac. Exposed for debugging,

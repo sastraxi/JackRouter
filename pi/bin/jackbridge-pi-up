@@ -17,7 +17,7 @@ WATCHER=/usr/local/libexec/jackbridge/jackbridge-xrun-watcher
 #   playback_* = TO master  (audio we send to the Mac)  → -P
 #   capture_*  = FROM master (audio we receive from the Mac) → -C
 # We want 4 channels pi→Mac (HW caps + mod-host wet) and 2 channels Mac→pi.
-jack_load netadapter -i "-C 2 -P 4"
+jack_load netadapter -i "-C 2 -P 4 -q 0 -g 256"
 
 # Beat for port registration to settle before we connect.
 sleep 0.5

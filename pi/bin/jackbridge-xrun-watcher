@@ -11,8 +11,17 @@ appended one line per xrun and rewrote-on-rename per event. Under load that
 pegged a core, starved jackd, and amplified the xrun rate it was measuring.
 Per-minute buckets bound the work to one int increment per event and at most
 one file write per second regardless of xrun rate.
+
+This process is also the service's storm-abort sentinel. If xruns arrive
+faster than JACKBRIDGE_XRUN_THRESHOLD per second (sliding 1s window), we
+sleep JACKBRIDGE_XRUN_GRACE seconds and exit nonzero. The systemd unit is
+configured Restart=on-failure with StartLimitBurst, so this triggers a
+clean service restart — which on the pi side is cheap, and lets the
+netadapter come up fresh after the Mac-side HAL/SHM/daemon transient
+has settled. See CLOCK_WARS.md / JITTER.md for why we want this.
 """
 
+import collections
 import os
 import re
 import select
@@ -22,6 +31,12 @@ import tempfile
 import time
 
 N_BUCKETS = 15  # 15 one-minute buckets = 15-minute window
+
+# Storm-abort: configurable, with sane defaults. 200/sec is well above any
+# benign hiccup and well below the thousands-per-second startup storm.
+XRUN_THRESHOLD = int(os.environ.get("JACKBRIDGE_XRUN_THRESHOLD", "200"))
+XRUN_GRACE = float(os.environ.get("JACKBRIDGE_XRUN_GRACE", "1.0"))
+STORM_EXIT_CODE = 75  # EX_TEMPFAIL — non-fatal, "please restart me"
 
 PATTERN = re.compile(r"JackRingBuffer::(Read|Write)\b.*\b(producer|consumer) too slow")
 
@@ -61,6 +76,7 @@ def main() -> int:
     cur_min = int(time.time()) // 60
     dirty = True
     last_flush = 0.0
+    recent = collections.deque()  # timestamps of xruns within last 1s
 
     try:
         assert proc.stdout is not None
@@ -83,6 +99,26 @@ def main() -> int:
                 if PATTERN.search(line):
                     buckets[cur_min % N_BUCKETS] += 1
                     dirty = True
+                    recent.append(now)
+                    while recent and recent[0] < now - 1.0:
+                        recent.popleft()
+                    if len(recent) > XRUN_THRESHOLD:
+                        print(
+                            f"jackbridge-xrun-watcher: storm detected "
+                            f"({len(recent)} xruns in last 1s > "
+                            f"threshold {XRUN_THRESHOLD}); "
+                            f"resetting buckets, sleeping {XRUN_GRACE}s, "
+                            f"then exiting {STORM_EXIT_CODE} to trigger "
+                            f"a clean systemd restart",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                        # Zero the file so the LCD doesn't show pre-restart
+                        # counts during the brief window before
+                        # jackbridge-pi-up truncates it on the next start.
+                        write_file(path, [0] * N_BUCKETS, cur_min)
+                        time.sleep(XRUN_GRACE)
+                        return STORM_EXIT_CODE
 
             # Flush at most once per second. Bounds filesystem work no matter
             # how fast xruns arrive — the bug this script's previous version

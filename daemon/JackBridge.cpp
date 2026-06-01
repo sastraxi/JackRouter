@@ -50,9 +50,17 @@ static std::atomic<bool> g_wire_dirty{false};
 
 // Daemon-side safety margin in frames, read once at startup from config.plist.
 // Used by the projection logic to keep the daemon's read/write heads inside
-// the HAL's window with enough slack to absorb scheduling jitter. Default 64;
-// tune via config.plist `JitterFrames` if guarantee-violation lines appear.
-static long g_jitter_frames = 64;
+// the HAL's window with enough slack to absorb scheduling jitter. Tune via
+// config.plist `JitterFrames` if guarantee-violation lines appear.
+static constexpr long kDefaultJitterFrames = 128;
+static long g_jitter_frames = kDefaultJitterFrames;
+
+// Drift threshold (frames) at which the daemon would "snap" FrameNumber to the
+// HAL anchor if closed-loop correction were enabled. We don't snap on master
+// (open-loop FrameNumber += nframes), but we still count would-be snaps in the
+// 5s drift trace so we can tell when scheduler hiccups are pushing us out of
+// the JitterFrames window. Matches the threshold previously used on fix/jitter.
+static constexpr int64_t kSnapThresholdFrames = 512;
 
 // Reads a long-valued key from /Library/Application Support/JackBridge/config.plist
 // via PlistBuddy. Returns `def` if the file/key is missing or unparseable.
@@ -316,11 +324,12 @@ public:
     }
 
     // jackd reports an xrun whenever a process cycle overruns its period or a
-    // backend cycle is dropped (netJACK2 packet loss surfaces here too). We
-    // can't get the frame count from libjack's xrun callback signature, so
-    // just timestamp it — correlate against the driver's jitter lines.
+    // backend cycle is dropped (netJACK2 packet loss surfaces here too). The
+    // callback signature gives no frame count, so we just count and let
+    // check_progress() roll it into the 5s drift trace — RT-safer than logging
+    // per event.
     int xrun_callback() override {
-        JB_LOG_DEFAULT(jb_log_jack(), "jackd xrun");
+        mXRunCount.fetch_add(1, std::memory_order_relaxed);
         return 0;
     }
 
@@ -429,6 +438,13 @@ private:
     os_workgroup_join_token_s mWorkgroupJoinToken;
     bool mWorkgroupJoined;
     int  mWorkgroupAcquireBackoff;
+
+    // RT-safe event counters drained by check_progress() every 5s. xruns come
+    // from jackd's xrun_callback; snaps are cycles where the open-loop
+    // FrameNumber would have drifted >kSnapThresholdFrames from HAL's anchor
+    // (master never actually snaps — see kSnapThresholdFrames comment).
+    std::atomic<uint32_t> mXRunCount{0};
+    std::atomic<uint32_t> mSnapCount{0};
 
     int sendToCoreAudio(float** in,int nframes) {
         unsigned int offset = FrameNumber % FramesPerBuffer;
@@ -621,12 +637,37 @@ private:
         int64_t  in_fill  = (int64_t)FrameNumber   - (int64_t)in_consumed;
         int64_t  out_fill = (int64_t)out_produced  - (int64_t)FrameNumber;
 
+        // Seqlocked snapshot of HAL's anchor. If the daemon's open-loop
+        // FrameNumber has drifted outside the JitterFrames+threshold window
+        // from where the HAL is reading, count it as a "would-snap" event —
+        // i.e. the point at which a closed-loop daemon would have to inject
+        // a discontinuity to realign. On master we only count, never realign.
+        uint64_t halReadHead = 0;
+        uint64_t s1, s2;
+        do {
+            s1 = shmHalAnchorSeq->load(std::memory_order_acquire);
+            halReadHead = shmHalInputReadHead->load(std::memory_order_relaxed);
+            s2 = shmHalAnchorSeq->load(std::memory_order_acquire);
+        } while ((s1 & 1) || s1 != s2);
+
+        if (halReadHead > 0 && isActive) {
+            int64_t target = (int64_t)halReadHead + g_jitter_frames;
+            int64_t diff = (int64_t)FrameNumber - target;
+            if (diff < 0) diff = -diff;
+            if (diff > kSnapThresholdFrames) {
+                mSnapCount.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+
         uint64_t period = (uint64_t)SampleRate * 5;
         if (period && FrameNumber / period != lastTraceFrame / period) {
+            uint32_t xruns = mXRunCount.exchange(0, std::memory_order_relaxed);
+            uint32_t snaps = mSnapCount.exchange(0, std::memory_order_relaxed);
             JB_LOG_INFO(jb_log_shm(),
-                "drift trace frame=%llu in_fill=%lld out_fill=%lld",
+                "drift trace frame=%llu in_fill=%lld out_fill=%lld xruns=%u snaps=%u",
                 (unsigned long long)FrameNumber,
-                (long long)in_fill, (long long)out_fill);
+                (long long)in_fill, (long long)out_fill,
+                (unsigned)xruns, (unsigned)snaps);
         }
         lastTraceFrame = FrameNumber;
     }
@@ -654,8 +695,8 @@ main(int argc, char** argv)
     g_main_thread = pthread_self();
 
     // Read tunables from config.plist before any RT code runs.
-    g_jitter_frames = read_config_long("JitterFrames", 64);
-    if (g_jitter_frames < 0) g_jitter_frames = 64;
+    g_jitter_frames = read_config_long("JitterFrames", kDefaultJitterFrames);
+    if (g_jitter_frames < 0) g_jitter_frames = kDefaultJitterFrames;
     JB_LOG_DEFAULT(jb_log_daemon(), "config: JitterFrames=%ld", g_jitter_frames);
 
     while ((ch = getopt(argc, argv, "vi:o:")) != -1) {
