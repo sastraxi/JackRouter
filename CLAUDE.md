@@ -30,6 +30,16 @@ JACK_PREFIX=/opt/homebrew ./installer/build-pkg.sh
 
 Signing/notarization gates on `SIGN_APP_IDENTITY`, `SIGN_INSTALLER_IDENTITY`, `NOTARY_PROFILE` env vars; unset = unsigned local build.
 
+## Pi-stomp
+
+We can connect to a Raspberry Pi 5-based guitar pedal called pi-Stomp via ssh:
+
+```bash
+ssh pistomp@pistomp.local
+```
+
+This connection is always over wifi; it does not use the ethernet connection we stream audio on.
+
 ## Architecture in 30 seconds
 
 ```
