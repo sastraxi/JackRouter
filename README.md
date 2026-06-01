@@ -12,6 +12,8 @@ Fork of [`madhatter68/JackRouter`](https://github.com/madhatter68/JackRouter), m
 
 The `.pkg` installs the HAL driver, the daemon, a managed `jackd` LaunchAgent (CoreAudio backend, `-P 75`, pinned to your built-in output for clock stability), and a system LaunchDaemon that pins the netJACK2 multicast route to the right NIC. Postinstall reloads `coreaudiod` and bootstraps everything into the current GUI session — no logout needed.
 
+> Note: the install is not notarized or signed. You will have to trust it manually.
+
 For the pi side: install pistomp-arch with JackBridge enabled, plug Ethernet from Mac to pi, toggle "Ethernet Audio Interface" on the LCD.
 
 ## What you get in the DAW
