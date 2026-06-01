@@ -87,3 +87,22 @@ Format-string literals only; use `%{public}s` when caller-supplied strings need 
 Driver and daemon both need hardened runtime; release builds use Developer ID + notarization inside a `.pkg`. Daemon carries `com.apple.security.cs.disable-library-validation` (in `daemon/daemon.entitlements`) to `dlopen` libjack. Install path is `/Library/Audio/Plug-Ins/HAL/JackBridgePlugIn.driver`; daemon + helpers live under `/Library/Application Support/JackBridge/`. Postinstall does `killall coreaudiod` and `launchctl bootstrap` into the active GUI session.
 
 Details: `docs/macos-setup.md`.
+
+## Tunables — what to change and where
+
+Ordered roughly by latency impact (biggest first), with the latency
+delta you get per unit of change.
+
+| Symbol | Knob | Where | Default | Impact on latency (frames per unit) |
+|--------|------|-------|---------|-------------------------------------|
+| G | netadapter ring size (`-g N`) | `pi/bin/jackbridge-pi-up:20` (deployed: `/usr/local/libexec/jackbridge/jackbridge-pi-up`) | `512` (was adaptive) | **0.5** — half a frame steady-state per ring frame; full frame in burst headroom |
+| P_pi | Pi JACK period (`-p N`) | `/etc/default/jack` (`JACK_PERIOD`), seeded by `pistomp-arch/files/pistomp.conf:28` | `64` | T_pj scales 1:1, T_alsa scales N_pi:1, T_l scales L:1 — **the largest knob** |
+| N_pi | ALSA periods (`-n N`) | `pistomp-arch/files/jackdrc:19` (hardcoded `-n 2`) | `2` | P_pi frames per period — biggest non-G one-shot saving if dropped to 1 (but risky) |
+| L | netadapter network latency (`-l N`, cycles, range 0–30) | `pi/bin/jackbridge-pi-up:20` (currently unset → default) | `2` (jack2 1.9.22, verified on-device) | P_pi frames per cycle |
+| P_mac | Mac JACK period (`PeriodFrames`) | `installer/config.plist:38` → `/Library/Application Support/JackBridge/config.plist` | `64` | T_mj scales 1:1; **must match P_pi or netJACK2 resampler chokes** |
+| J | HAL safety lead (`JitterFrames`) | `installer/config.plist:48` | `192` | 1:1 — pure latency, no slip-ring effect (single clock domain) |
+| f_s | Sample rate | `pistomp.conf:27` AND `installer/config.plist:31` | `48000` | All times are `frames / f_s`, so doubling f_s halves all ms costs but doubles CPU |
+| Q | netadapter resampler quality (`-q N`, **0 = lowest, 4 = highest**) | `pi/bin/jackbridge-pi-up:20` | `0` (we set it explicitly) | No latency impact — only CPU/fidelity |
+| MTU | netJACK MTU | `installer/config.plist:63` | `1500` | Affects T_wire only at jumbo-frame scale; only changes packet count, not buffer math |
+| RT prio | jackd realtime priority | Pi: hardcoded `-P 75` in `jackdrc:19`. Mac: `RealtimePriority` in `config.plist:54` | `75` both | No direct latency; affects jitter (variance), not mean |
+| Storm threshold | Auto-restart on xrun storm | `JACKBRIDGE_XRUN_THRESHOLD` env (read by `jackbridge-xrun-watcher`) | `50/s` | Recovers from degraded state; doesn't change steady-state latency |

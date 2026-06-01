@@ -57,8 +57,8 @@ clock B). Drift between A and B is absorbed by the netadapter slip ring
 ## Latency contributions
 
 Per-link, **monitoring path** (pi codec input → Mac → pi codec output)
-with defaults at 48 kHz / Pi `-p 64` / Mac `PeriodFrames=64` / `-g 256`
-/ `JitterFrames=192`. See "What this sum is" below for what to add or
+with defaults at 48 kHz / Pi `-p 64` / Mac `PeriodFrames=64` / `-g 512`
+/ `JitterFrames=256`. See "What this sum is" below for what to add or
 subtract for other measurements (one-way recording, round-trip
 loopback, etc.).
 
@@ -67,15 +67,15 @@ loopback, etc.).
 | T_adc  | Codec ADC          | Fixed group delay through the IQaudIO ADC | ~1 | ~0.02 |
 | T_alsa | ALSA capture       | `period_size × nperiods` on the pi ALSA backend (`-p × -n`) | 128 | 2.67 |
 | T_pj   | Pi jackd cycle     | One JACK period on the pi (`P_pi`) | 64 | 1.33 |
-| T_g    | netadapter slip ring | Steady-state fill ≈ G/2 (controller targets midpoint) | 128 | 2.67 |
+| T_g    | netadapter slip ring | Steady-state fill ≈ G/2 (controller targets midpoint) | 256 | 5.33 |
 | T_l    | netadapter cycles  | Network latency in cycles (`-l N` → N · P_pi). **jack2 1.9.22 default = 2 cycles, max 30** (verified on-device via `Network latency : N cycles` log). | 128 | 2.67 |
 | T_wire | UDP transit        | LAN one-way, direct cable. Dominated by NIC + switch fabric; sub-millisecond on a direct cable, ~0.5–1 ms through one consumer switch. | ~17 | ~0.35 |
 | T_nm   | Mac netmanager     | One netjack cycle on the master side (≈ P_mac) | 64 | 1.33 |
 | T_mj   | Mac jackd cycle    | One JACK period on the Mac (`PeriodFrames`) | 64 | 1.33 |
 | T_d    | Daemon shm publish | memcpy + atomic release — nanoseconds, ignore | 0 | 0 |
-| T_jf   | HAL safety lead    | `JitterFrames` — daemon writes this far ahead of HAL's read | 192 | 4.00 |
+| T_jf   | HAL safety lead    | `JitterFrames` — daemon writes this far ahead of HAL's read | 256 | 5.33 |
 | T_dac  | Codec DAC          | Fixed group delay through the IQaudIO DAC | ~1 | ~0.02 |
-| **Σ**  | **Monitoring trip** | Sum of all rows above                   | **787** | **16.4** |
+| **Σ**  | **Monitoring trip** | Sum of all rows above                   | **979** | **20.4** |
 
 ### What this sum is
 
@@ -127,7 +127,7 @@ delta you get per unit of change.
 | N_pi | ALSA periods (`-n N`) | `pistomp-arch/files/jackdrc:19` (hardcoded `-n 2`) | `2` | P_pi frames per period — biggest non-G one-shot saving if dropped to 1 (but risky) |
 | L | netadapter network latency (`-l N`, cycles, range 0–30) | `pi/bin/jackbridge-pi-up:20` (currently unset → default) | `2` (jack2 1.9.22, verified on-device) | P_pi frames per cycle |
 | P_mac | Mac JACK period (`PeriodFrames`) | `installer/config.plist:38` → `/Library/Application Support/JackBridge/config.plist` | `64` | T_mj scales 1:1; **must match P_pi or netJACK2 resampler chokes** |
-| J | HAL safety lead (`JitterFrames`) | `installer/config.plist:48` | `192` | 1:1 — pure latency, no slip-ring effect (single clock domain) |
+| J | HAL safety lead (`JitterFrames`) | `installer/config.plist:48` | `256` | 1:1 — pure latency, no slip-ring effect (single clock domain) |
 | f_s | Sample rate | `pistomp.conf:27` AND `installer/config.plist:31` | `48000` | All times are `frames / f_s`, so doubling f_s halves all ms costs but doubles CPU |
 | Q | netadapter resampler quality (`-q N`, **0 = lowest, 4 = highest**) | `pi/bin/jackbridge-pi-up:20` | `0` (we set it explicitly) | No latency impact — only CPU/fidelity |
 | MTU | netJACK MTU | `installer/config.plist:63` | `1500` | Affects T_wire only at jumbo-frame scale; only changes packet count, not buffer math |

@@ -42,10 +42,15 @@
          Absorbs scheduling jitter so the HAL never reads partially-written
          data. Measured envelope on Apple Silicon at 48k/64 is ±~10 frames
          steady-state with worst-case excursions up to ~75 frames during
-         load transients — JitterFrames=128 leaves comfortable headroom.
+         load transients — but Mac CoreAudio preemption events (Spotlight,
+         display sleep/wake, fan ramps) routinely produce IOProc wakes
+         demanding 160–360 frames in a single call. JitterFrames=256
+         absorbs the common case (~160) while leaving the rare 360-frame
+         outlier to be logged rather than soaked. If you see frequent
+         outLead<=0 + nearMiss=1 in the driver jitter log, raise this.
          If the daemon logs guarantee-violation lines, raise this. -->
     <key>JitterFrames</key>
-    <integer>128</integer>
+    <integer>256</integer>
 
     <!-- jackd realtime priority. 75 is load-bearing per Spike B; lowering
          this will cause xruns on any non-idle Mac. Exposed for debugging,
