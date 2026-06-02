@@ -30,6 +30,16 @@
     <key>SampleRate</key>
     <integer>48000</integer>
 
+    <!-- Reported end-to-end latency in frames. REAPER and other DAWs add
+         these to the IO buffer size to show total latency. Defaults match
+         the documented monitoring path from docs/LATENCY-MODEL.md at the
+         default settings (48 kHz, pi JACK -p 64, netadapter -g 512 -l 2,
+         JitterFrames=256). Adjust if you change buffer sizes. -->
+    <key>ReportedLatencyInputFrames</key>
+    <integer>979</integer>
+    <key>ReportedLatencyOutputFrames</key>
+    <integer>979</integer>
+
     <!-- jackd backend period in frames (`-p`). MUST match the Pi-side jackd
          period — netJACK2's adaptive resampler chokes on cycle 1 with off-by-
          one `WriteResample error` when periods differ, then thrashes. pi-stomp

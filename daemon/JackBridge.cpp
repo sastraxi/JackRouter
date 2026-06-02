@@ -112,6 +112,7 @@ public:
         check_jack_backend();
 
         isActive = false;
+        mLastDriverStatus = JB_DRV_STATUS_ACTIVE;
         isSyncMode = true; // FIXME: should be parameterized
         isVerbose = (getenv("JACKBRIDGE_DEBUG")) ? true : false;
         FrameNumber = 0;
@@ -258,7 +259,30 @@ public:
         process_midi_message(nframes);
 #endif // _WITH_MIDI_BRIDGE_
 
-        if (shmDriverStatus->load(std::memory_order_acquire) != JB_DRV_STATUS_STARTED) {
+        // State machine: detect HAL restart BEFORE the early-return path.
+        // When the DAW stops IO, _HW_StopIO sets shmDriverStatus = ACTIVE.
+        // The daemon then returns early (below) WITHOUT advancing FrameNumber.
+        // When IO resumes, _HW_StartIO sets shmDriverStatus = STARTED. We
+        // must detect that transition here, before we return early again,
+        // or mLastDriverStatus stays stale forever.
+        uint64_t currentStatus = shmDriverStatus->load(std::memory_order_acquire);
+        if (currentStatus == JB_DRV_STATUS_STARTED &&
+            mLastDriverStatus != JB_DRV_STATUS_STARTED) {
+            // Re-anchor: map current wall-clock time to the current frozen
+            // FrameNumber so the HAL resumes reading from where we're writing.
+            // Do NOT reset FrameNumber — that would create a timeline
+            // discontinuity and break transport progression.
+            shmZeroHostTime->store(mach_absolute_time(), std::memory_order_relaxed);
+            shmNumberTimeStamps->store(FrameNumber / FramesPerBuffer,
+                                           std::memory_order_release);
+            shmSeed->fetch_add(1, std::memory_order_release);
+            JB_LOG_INFO(jb_log_jack(),
+                "JackBridge#%u: re-anchored after HAL restart frame=%llu",
+                instance, (unsigned long long)FrameNumber);
+        }
+        mLastDriverStatus = currentStatus;
+
+        if (currentStatus != JB_DRV_STATUS_STARTED) {
             // Driver isn't working. Just return zero buffer;
             for(int i=0; i<NUM_OUTPUT_CHANNELS; i++) {
                 aout[i] = (sample_t*)jack_port_get_buffer(audioOut[i], nframes);
@@ -292,19 +316,17 @@ public:
         }
 
         if ((FrameNumber % FramesPerBuffer) == 0) {
-            if(shmSyncMode->load(std::memory_order_acquire) == 1) {
-                shmZeroHostTime->store(mach_absolute_time(), std::memory_order_relaxed);
-                shmNumberTimeStamps->store(FrameNumber / FramesPerBuffer,
+            shmZeroHostTime->store(mach_absolute_time(), std::memory_order_relaxed);
+            shmNumberTimeStamps->store(FrameNumber / FramesPerBuffer,
                                            std::memory_order_release);
-            }
+        }
 
-            if ((!isSyncMode) && isVerbose && ((ncalls++) % 100) == 0) {
-                uint64_t zht = shmZeroHostTime->load(std::memory_order_acquire);
-                printf("JackBridge#%d: ZeroHostTime: %llx, %llu, diff:%d\n",
-                    instance, zht,
-                    shmNumberTimeStamps->load(std::memory_order_acquire),
-                    ((int)(mach_absolute_time()+1000000-zht))-1000000);
-            }
+        if ((!isSyncMode) && isVerbose && ((ncalls++) % 100) == 0) {
+            uint64_t zht = shmZeroHostTime->load(std::memory_order_acquire);
+            printf("JackBridge#%d: ZeroHostTime: %llx, %llu, diff:%d\n",
+                instance, zht,
+                shmNumberTimeStamps->load(std::memory_order_acquire),
+                ((int)(mach_absolute_time()+1000000-zht))-1000000);
         }
 
         for(int i=0; i<NUM_INPUT_CHANNELS; i++) {
@@ -430,6 +452,7 @@ private:
     bool isActive, isSyncMode, isVerbose;
     uint64_t lastTraceFrame;
     int64_t ncalls;
+    uint64_t mLastDriverStatus;
     char** nameAin;
     char** nameAout;
 

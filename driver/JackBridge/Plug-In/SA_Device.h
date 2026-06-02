@@ -219,6 +219,12 @@ private:
     // handed us — values >nominal mean CA bunched multiple cycles together.
     UInt32                   mJitterInNearMiss, mJitterOutNearMiss;
     UInt32                   mJitterMaxNFrames;
+
+    // Reported end-to-end latency in frames, read once from config.plist in
+    // _HW_Open. DAWs add this to the IO buffer size. Defaults match the
+    // monitoring-trip total from docs/LATENCY-MODEL.md (~979 frames @ 48k).
+    UInt32                   mReportedLatencyInput;
+    UInt32                   mReportedLatencyOutput;
 };
 
 #endif	//	__SA_Device_h__
