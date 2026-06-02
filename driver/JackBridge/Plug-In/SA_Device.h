@@ -199,32 +199,26 @@ private:
     Float64                  gDevice_AnchorSampleTime;
     UInt64                   gDevice_AnchorHostTime;
 
-    // Cycle-jitter measurement. Owned by the IO thread, no locking. Step 1 of
-    // the HAL-authoritative-anchor design (PLAN, sync rework) — measure the
-    // envelope of mCurrentTime→mInputTime and mOutputTime→mCurrentTime in
-    // frames so the daemon-side safety margin can be chosen from evidence
-    // rather than guessed. Emit one summary line every ~5s, then reset.
-    UInt64                   mJitterCycleCount;
-    UInt64                   mJitterInSampleCount, mJitterOutSampleCount;
-    SInt64                   mJitterInLeadMin, mJitterInLeadMax;
-    SInt64                   mJitterInLeadSum;
-    SInt64                   mJitterOutLeadMin, mJitterOutLeadMax;
-    SInt64                   mJitterOutLeadSum;
-    UInt32                   mJitterLastNFrames;
-    UInt64                   mJitterLastHostTime;
-    // Per-window near-miss counters: how many cycles in this 5s window had
-    // inLead (or outLead) <16 frames of headroom. The 5s aggregates smooth
-    // over single-cycle excursions, hiding the events that actually cause
-    // audible crackles. mJitterMaxNFrames tracks the largest IO call CA
-    // handed us — values >nominal mean CA bunched multiple cycles together.
-    UInt32                   mJitterInNearMiss, mJitterOutNearMiss;
-    UInt32                   mJitterMaxNFrames;
+    // Per-5s window health counters. Owned by the IO thread, no locking.
+    // All zero in healthy steady state; nonzero values are the only things
+    // worth reading in the log.
+    UInt64                   mHealthCycleCount;
+    UInt64                   mHealthLastHostTime;     // de-dupe ReadInput+WriteMix per cycle
+    UInt32                   mHealthMaxNFrames;       // 64 nominal; spikes = CoreAudio bunching
+    UInt32                   mHealthNearMiss;         // cycles with inLead OR outLead < 16
+    UInt64                   mHealthLeadJitter;       // Σ |lead - nominal| over in+out samples
 
-    // Reported end-to-end latency in frames, read once from config.plist in
-    // _HW_Open. DAWs add this to the IO buffer size. Defaults match the
-    // monitoring-trip total from docs/LATENCY-MODEL.md (~979 frames @ 48k).
+    // Reported end-to-end latency in frames, set once in _HW_Open to
+    // kBaseLatencyFrames. JitterFrames is advertised separately via
+    // kAudioDevicePropertySafetyOffset, so we do not add it here.
     UInt32                   mReportedLatencyInput;
     UInt32                   mReportedLatencyOutput;
+
+    // Producer-side safety lead in frames. Read from config.plist in _HW_Open
+    // and returned from kAudioDevicePropertySafetyOffset; CoreAudio schedules
+    // the IOProc that many frames earlier in sampleTime, so the daemon's
+    // write head naturally sits ahead of the HAL's read head in the ring.
+    UInt32                   mSafetyOffsetFrames;
 };
 
 #endif	//	__SA_Device_h__

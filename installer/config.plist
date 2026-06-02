@@ -30,15 +30,12 @@
     <key>SampleRate</key>
     <integer>48000</integer>
 
-    <!-- Reported end-to-end latency in frames. REAPER and other DAWs add
-         these to the IO buffer size to show total latency. Defaults match
-         the documented monitoring path from docs/LATENCY-MODEL.md at the
-         default settings (48 kHz, pi JACK -p 64, netadapter -g 512 -l 2,
-         JitterFrames=256). Adjust if you change buffer sizes. -->
-    <key>ReportedLatencyInputFrames</key>
-    <integer>979</integer>
-    <key>ReportedLatencyOutputFrames</key>
-    <integer>979</integer>
+    <!-- Reported end-to-end latency is split in the HAL across two
+         CoreAudio properties: kAudioDevicePropertyLatency = 722
+         (BASE_LATENCY_FRAMES from docs/LATENCY-MODEL.md at the
+         documented pi-side defaults), and
+         kAudioDevicePropertySafetyOffset = JitterFrames. The DAW sums
+         them. No knob here. -->
 
     <!-- jackd backend period in frames (`-p`). MUST match the Pi-side jackd
          period — netJACK2's adaptive resampler chokes on cycle 1 with off-by-
@@ -47,20 +44,13 @@
     <key>PeriodFrames</key>
     <integer>64</integer>
 
-    <!-- Daemon-side safety margin (in frames) added on top of `PeriodFrames`
-         when projecting read/write head positions against the HAL's anchor.
-         Absorbs scheduling jitter so the HAL never reads partially-written
-         data. Measured envelope on Apple Silicon at 48k/64 is ±~10 frames
-         steady-state with worst-case excursions up to ~75 frames during
-         load transients — but Mac CoreAudio preemption events (Spotlight,
-         display sleep/wake, fan ramps) routinely produce IOProc wakes
-         demanding 160–360 frames in a single call. JitterFrames=256
-         absorbs the common case (~160) while leaving the rare 360-frame
-         outlier to be logged rather than soaked. If you see frequent
-         outLead<=0 + nearMiss=1 in the driver jitter log, raise this.
-         If the daemon logs guarantee-violation lines, raise this. -->
+    <!-- Safety lead in frames. Returned by the HAL from
+         kAudioDevicePropertySafetyOffset: CoreAudio schedules the IOProc
+         that many frames earlier in sampleTime, so the daemon's write
+         head naturally sits JitterFrames ahead of the HAL's read head.
+         In practice, we do not need this; keep it at 0. -->
     <key>JitterFrames</key>
-    <integer>256</integer>
+    <integer>0</integer>
 
     <!-- jackd realtime priority. 75 is load-bearing per Spike B; lowering
          this will cause xruns on any non-idle Mac. Exposed for debugging,

@@ -41,6 +41,7 @@ SOFTWARE.
 #include "workgroup.hpp"
 #include "RingProjector.hpp"
 #include "RingCopy.hpp"
+#include <mach/mach_time.h>
 
 // Set in main() before jack_activate; read by the port-registration callback to
 // wake the main thread out of sigwait when slave ports come or go. Notification
@@ -51,17 +52,16 @@ static pthread_t g_main_thread;
 static std::atomic<bool> g_wire_dirty{false};
 
 // Daemon-side safety margin in frames, read once at startup from config.plist.
-// Used by the projection logic to keep the daemon's read/write heads inside
-// the HAL's window with enough slack to absorb scheduling jitter. Tune via
-// config.plist `JitterFrames` if guarantee-violation lines appear.
-static constexpr long kDefaultJitterFrames = 128;
+// The HAL realises this by returning JitterFrames from
+// kAudioDevicePropertySafetyOffset; CoreAudio then schedules the IOProc that
+// many frames earlier in sampleTime, so the daemon's write head naturally
+// sits JitterFrames ahead of the HAL's read head in the ring.
+static constexpr long kDefaultJitterFrames = 192;
 static long g_jitter_frames = kDefaultJitterFrames;
 
-// Drift threshold (frames) at which the daemon would "snap" FrameNumber to the
-// HAL anchor if closed-loop correction were enabled. We don't snap on master
-// (open-loop FrameNumber += nframes), but we still count would-be snaps in the
-// 5s drift trace so we can tell when scheduler hiccups are pushing us out of
-// the JitterFrames window. Matches the threshold previously used on fix/jitter.
+// Drift threshold (frames) at which |FrameNumber - (halReadHead + JitterFrames)|
+// exceeds the safety window. Counted in the 5s drift trace as a diagnostic for
+// scheduler hiccups large enough to consume the SafetyOffset lead.
 static constexpr int64_t kSnapThresholdFrames = 512;
 
 // Reads a long-valued key from /Library/Application Support/JackBridge/config.plist
@@ -148,8 +148,8 @@ public:
         mWorkgroupAcquireBackoff = 0;
 
         JB_LOG_INFO(jb_log_daemon(),
-            "JackBridge#%u: start with samplerate=%d Hz, buffersize=%u bytes",
-            instance, SampleRate, (unsigned)BufSize);
+            "JackBridge#%u: start sr=%d Hz, bufsize=%u bytes, jitter=%ld frames",
+            instance, SampleRate, (unsigned)BufSize, g_jitter_frames);
     }
 
     ~JackBridge() {
@@ -274,7 +274,8 @@ public:
             // FrameNumber so the HAL resumes reading from where we're writing.
             // Do NOT reset FrameNumber — that would create a timeline
             // discontinuity and break transport progression.
-            shmZeroHostTime->store(mach_absolute_time(), std::memory_order_relaxed);
+            shmZeroHostTime->store(mach_absolute_time(),
+                                   std::memory_order_relaxed);
             shmNumberTimeStamps->store(FrameNumber / FramesPerBuffer,
                                            std::memory_order_release);
             shmSeed->fetch_add(1, std::memory_order_release);
@@ -318,7 +319,8 @@ public:
         }
 
         if ((FrameNumber % FramesPerBuffer) == 0) {
-            shmZeroHostTime->store(mach_absolute_time(), std::memory_order_relaxed);
+            shmZeroHostTime->store(mach_absolute_time(),
+                                   std::memory_order_relaxed);
             shmNumberTimeStamps->store(FrameNumber / FramesPerBuffer,
                                            std::memory_order_release);
         }
@@ -465,10 +467,14 @@ private:
     int  mWorkgroupAcquireBackoff;
 
     // RT-safe event counters drained by check_progress() every 5s. xruns come
-    // from jackd's xrun_callback; snaps are cycles where the open-loop
-    // FrameNumber would have drifted >kSnapThresholdFrames from HAL's anchor
-    // (master never actually snaps — see kSnapThresholdFrames comment).
+    // from jackd's xrun_callback; snaps are cycles where the FrameNumber-vs-
+    // halReadHead margin drifted >kSnapThresholdFrames from JitterFrames.
     std::atomic<uint32_t> mXRunCount{0};
+
+    // Health-window accumulators, single-writer (JACK process thread via
+    // check_progress). All zero in healthy steady state.
+    uint64_t mHealthDeficit{0};        // Σ max(0, JitterFrames - margin) per cycle
+    uint64_t mHealthMarginAbsDev{0};   // Σ |margin - JitterFrames| per cycle
     std::atomic<uint32_t> mSnapCount{0};
 
     int sendToCoreAudio(float** in, int nframes) {
@@ -648,30 +654,16 @@ private:
     }
 #endif // _WITH_MIDI_BRIDGE_
 
-    // Drift trace. Under Config B both sides share the CoreAudio host clock, so
-    // ring fill should oscillate within a small bounded range forever. A
-    // monotonic trend over minutes means the daemon (JACK side) and HAL
-    // (CoreAudio IO proc) aren't actually on the same clock — Config B is
-    // broken (jackd backend pointed at a different device than the DAW's
-    // output, aggregate device with two crystals, etc.). See
-    // docs/architecture.md.
+    // Health trace. Per-cycle: snapshot the HAL's read head, compute the
+    // margin (FrameNumber - halReadHead — should sit at JitterFrames), and
+    // accumulate integrated deviation and deficit. Emit one line every ~5s.
+    //
+    // All four values are zero in healthy steady state. Any nonzero value is
+    // the only thing worth reading.
     //
     // Tail with:
     //   log stream --predicate 'subsystem == "com.jackbridge" && category == "shm"'
-    //
-    // One line every ~5s — bounded cost; os_log on the RT path is the same
-    // pre-existing FIXME flagged elsewhere in this file.
     void check_progress() {
-        uint64_t in_consumed  = shmReadFrameNumber[0]->load(std::memory_order_acquire);
-        uint64_t out_produced = shmWriteFrameNumber[0]->load(std::memory_order_acquire);
-        int64_t  in_fill  = (int64_t)FrameNumber   - (int64_t)in_consumed;
-        int64_t  out_fill = (int64_t)out_produced  - (int64_t)FrameNumber;
-
-        // Seqlocked snapshot of HAL's anchor. If the daemon's open-loop
-        // FrameNumber has drifted outside the JitterFrames+threshold window
-        // from where the HAL is reading, count it as a "would-snap" event —
-        // i.e. the point at which a closed-loop daemon would have to inject
-        // a discontinuity to realign. On master we only count, never realign.
         uint64_t halReadHead = 0;
         uint64_t s1, s2;
         do {
@@ -681,10 +673,12 @@ private:
         } while ((s1 & 1) || s1 != s2);
 
         if (halReadHead > 0 && isActive) {
-            int64_t target = (int64_t)halReadHead + g_jitter_frames;
-            int64_t diff = (int64_t)FrameNumber - target;
-            if (diff < 0) diff = -diff;
-            if (diff > kSnapThresholdFrames) {
+            int64_t margin = (int64_t)FrameNumber - (int64_t)halReadHead;
+            int64_t delta  = margin - (int64_t)g_jitter_frames;
+            uint64_t adelta = (uint64_t)(delta < 0 ? -delta : delta);
+            mHealthMarginAbsDev += adelta;
+            if (delta < 0) mHealthDeficit += (uint64_t)(-delta);
+            if (adelta > (uint64_t)kSnapThresholdFrames) {
                 mSnapCount.fetch_add(1, std::memory_order_relaxed);
             }
         }
@@ -694,10 +688,13 @@ private:
             uint32_t xruns = mXRunCount.exchange(0, std::memory_order_relaxed);
             uint32_t snaps = mSnapCount.exchange(0, std::memory_order_relaxed);
             JB_LOG_INFO(jb_log_shm(),
-                "drift trace frame=%llu in_fill=%lld out_fill=%lld xruns=%u snaps=%u",
-                (unsigned long long)FrameNumber,
-                (long long)in_fill, (long long)out_fill,
-                (unsigned)xruns, (unsigned)snaps);
+                "health xruns=%u deficit=%llu marginAbsDev=%llu snaps=%u",
+                (unsigned)xruns,
+                (unsigned long long)mHealthDeficit,
+                (unsigned long long)mHealthMarginAbsDev,
+                (unsigned)snaps);
+            mHealthDeficit = 0;
+            mHealthMarginAbsDev = 0;
         }
         lastTraceFrame = FrameNumber;
     }
@@ -760,6 +757,7 @@ main(int argc, char** argv)
     if (vflag) {
         jackBridge[0]->setVerbose(vflag);
     }
+
     //jackBridge[1] = new JackBridge("JackBridge #2", 1);
 
     // activate gateway from/to jack ports

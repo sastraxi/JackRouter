@@ -64,6 +64,7 @@
 #include "CAException.h"
 
 #include <mach/mach_time.h>
+#include <cstdlib>
 
 //==================================================================================================
 //	SA_Device
@@ -83,20 +84,12 @@ SA_Device::SA_Device(AudioObjectID inObjectID, UInt32 instance)
 	mDeviceIsAlive(true),
 	mLastDaemonAlive(0),
 	mLastDaemonAliveHostTime(0),
-	mJitterCycleCount(0),
-	mJitterInSampleCount(0),
-	mJitterOutSampleCount(0),
-	mJitterInNearMiss(0),
-	mJitterOutNearMiss(0),
-	mJitterMaxNFrames(0),
-	mJitterInLeadMin(INT64_MAX),
-	mJitterInLeadMax(INT64_MIN),
-	mJitterInLeadSum(0),
-	mJitterOutLeadMin(INT64_MAX),
-	mJitterOutLeadMax(INT64_MIN),
-	mJitterOutLeadSum(0),
-	mJitterLastNFrames(0),
-	mJitterLastHostTime(0)
+	mHealthCycleCount(0),
+	mHealthLastHostTime(0),
+	mHealthMaxNFrames(0),
+	mHealthNearMiss(0),
+	mHealthLeadJitter(0),
+	mSafetyOffsetFrames(0)
 {
 	for(int i=0; i<kNumberOfInputSubObjects; i++)
     {
@@ -748,8 +741,9 @@ void	SA_Device::Device_GetPropertyData(AudioObjectID inObjectID, pid_t inClientP
 
 		case kAudioDevicePropertyLatency:
 			//	Presentation latency of the device. We report the end-to-end chain
-			//	documented in docs/LATENCY-MODEL.md so the DAW adds it to the IO
-			//	buffer size. Tuned via config.plist ReportedLatency{Input,Output}Frames.
+			//	documented in docs/LATENCY-MODEL.md *excluding* JitterFrames, which
+			//	is surfaced separately via kAudioDevicePropertySafetyOffset. The DAW
+			//	sums Latency + SafetyOffset + BufferFrameSize + StreamLatency.
 			ThrowIf(inDataSize < sizeof(UInt32), CAException(kAudioHardwareBadPropertySizeError), "SA_Device::Device_GetPropertyData: not enough space for the return value of kAudioDevicePropertyLatency for the device");
 			if (inAddress.mScope == kAudioObjectPropertyScopeInput) {
 				*reinterpret_cast<UInt32*>(outData) = mReportedLatencyInput;
@@ -838,10 +832,12 @@ void	SA_Device::Device_GetPropertyData(AudioObjectID inObjectID, pid_t inClientP
 			break;
 
 		case kAudioDevicePropertySafetyOffset:
-			//	This property returns the how close to now the HAL can read and write. For
-			//	this, device, the value is 0 due to the fact that it always vends silence.
+			//	Producer-side safety lead. CoreAudio schedules the IOProc this many
+			//	frames earlier in sampleTime, giving the daemon time to land each
+			//	period in the ring before the HAL reads it. Set from config.plist
+			//	JitterFrames in _HW_Open.
 			ThrowIf(inDataSize < sizeof(UInt32), CAException(kAudioHardwareBadPropertySizeError), "SA_Device::Device_GetPropertyData: not enough space for the return value of kAudioDevicePropertySafetyOffset for the device");
-			*reinterpret_cast<UInt32*>(outData) = 0;
+			*reinterpret_cast<UInt32*>(outData) = mSafetyOffsetFrames;
 			outDataSize = sizeof(UInt32);
 			break;
 
@@ -1544,48 +1540,46 @@ void	SA_Device::WillDoIOOperation(UInt32 inOperationID, bool& outWillDo, bool& o
 void	SA_Device::BeginIOOperation(UInt32 inOperationID, UInt32 inIOBufferFrameSize, const AudioServerPlugInIOCycleInfo& inIOCycleInfo)
 {
 	#pragma unused(inOperationID, inIOBufferFrameSize)
-	// Step 1 of sync rework: measure scheduling-jitter envelope. CoreAudio gives
-	// us three timestamps per cycle on the same host clock - mInputTime is when
-	// the input frame was captured, mOutputTime is when the output frame will
-	// play, mCurrentTime is when this callback actually fired. The deltas tell
-	// us how much lead/lag the daemon needs to project, and how stable that
-	// number is cycle-to-cycle.
+	// CoreAudio gives three timestamps per cycle on the same host clock:
+	// mInputTime (capture time), mOutputTime (playback time), mCurrentTime
+	// (callback fire time). lead = |mCurrentTime - mInput/OutputTime| in
+	// frames. Nominal lead at a P-frame period is P-1 (fence-post): the
+	// IOProc fires when the buffer is just complete. Deviations are
+	// CoreAudio scheduling stress; near-zero leads risk torn reads.
 	//
-	// Per-op sampling: mInputTime is only meaningful during ReadInput ops, and
-	// mOutputTime only during WriteMix ops - the other field may read as 0 or
-	// stale. Sample each side only when its op fires. UInt64 subtraction would
-	// underflow when the "future" timestamp is smaller; cast to SInt64 first.
+	// mInputTime is only meaningful during ReadInput, mOutputTime only
+	// during WriteMix — sample each side only when its op fires.
 	if (gDevice_HostTicksPerFrame <= 0.0) return;
 
-	SInt64 nowTicks = (SInt64)inIOCycleInfo.mCurrentTime.mHostTime;
+	const SInt64 nowTicks = (SInt64)inIOCycleInfo.mCurrentTime.mHostTime;
+	// SafetyOffset shifts mInputTime back / mOutputTime forward by that many
+	// frames, so the nominal lead grows from (nframes-1) to
+	// (nframes-1 + SafetyOffset). leadJitter stays ≈0 in healthy steady state.
+	const SInt64 nominal  = (SInt64)inIOBufferFrameSize - 1 + (SInt64)mSafetyOffsetFrames;
+	bool inNearMiss = false, outNearMiss = false;
 	if (inOperationID == kAudioServerPlugInIOOperationReadInput) {
 		SInt64 inLead = (SInt64)((Float64)(nowTicks - (SInt64)inIOCycleInfo.mInputTime.mHostTime)
 		                         / gDevice_HostTicksPerFrame);
-		if (inLead < mJitterInLeadMin) mJitterInLeadMin = inLead;
-		if (inLead > mJitterInLeadMax) mJitterInLeadMax = inLead;
-		if (inLead < 16) mJitterInNearMiss++;
-		mJitterInLeadSum += inLead;
-		mJitterInSampleCount++;
+		mHealthLeadJitter += (UInt64)std::llabs(inLead - nominal);
+		if (inLead < 16) inNearMiss = true;
 	} else if (inOperationID == kAudioServerPlugInIOOperationWriteMix) {
 		SInt64 outLead = (SInt64)((Float64)((SInt64)inIOCycleInfo.mOutputTime.mHostTime - nowTicks)
 		                          / gDevice_HostTicksPerFrame);
-		if (outLead < mJitterOutLeadMin) mJitterOutLeadMin = outLead;
-		if (outLead > mJitterOutLeadMax) mJitterOutLeadMax = outLead;
-		if (outLead < 16) mJitterOutNearMiss++;
-		mJitterOutLeadSum += outLead;
-		mJitterOutSampleCount++;
+		mHealthLeadJitter += (UInt64)std::llabs(outLead - nominal);
+		if (outLead < 16) outNearMiss = true;
 	} else {
 		return;
 	}
 
 	// Count cycles by mCurrentTime change so the emit cadence is in cycles,
-	// not ops. (ReadInput + WriteMix per cycle would otherwise double-count.)
+	// not ops. nearMiss is per-cycle (either side trips it).
 	UInt64 cycleHostTime = inIOCycleInfo.mCurrentTime.mHostTime;
-	if (cycleHostTime == mJitterLastHostTime) return;
-	mJitterLastHostTime = cycleHostTime;
-	mJitterCycleCount++;
-	mJitterLastNFrames = inIOBufferFrameSize;
-	if (inIOBufferFrameSize > mJitterMaxNFrames) mJitterMaxNFrames = inIOBufferFrameSize;
+	if (cycleHostTime != mHealthLastHostTime) {
+		mHealthLastHostTime = cycleHostTime;
+		mHealthCycleCount++;
+		if (inIOBufferFrameSize > mHealthMaxNFrames) mHealthMaxNFrames = inIOBufferFrameSize;
+	}
+	if (inNearMiss || outNearMiss) mHealthNearMiss++;
 
 	// Step 3: publish HAL anchor under a seqlock. Single writer (this thread,
 	// this per-cycle path), so the dance is: bump seq to odd, write fields,
@@ -1609,28 +1603,19 @@ void	SA_Device::BeginIOOperation(UInt32 inOperationID, UInt32 inIOBufferFrameSiz
 	UInt64 cyclesPer5s = (inIOBufferFrameSize > 0)
 	                   ? (mSampleRateShadow * 5 / inIOBufferFrameSize)
 	                   : 0;
-	if (cyclesPer5s == 0 || mJitterCycleCount < cyclesPer5s) return;
+	if (cyclesPer5s == 0 || mHealthCycleCount < cyclesPer5s) return;
 
-	// Per-direction means: ReadInput fires once per input stream per cycle and
-	// WriteMix once per output stream - divide by per-direction sample count,
-	// not cycle count, or means come out scaled by NUM_*_STREAMS.
-	SInt64 inMean  = (mJitterInSampleCount  > 0) ? mJitterInLeadSum  / (SInt64)mJitterInSampleCount  : 0;
-	SInt64 outMean = (mJitterOutSampleCount > 0) ? mJitterOutLeadSum / (SInt64)mJitterOutSampleCount : 0;
 	JB_LOG_INFO(jb_log_driver(),
-		"jitter nframes=%u maxNFrames=%u cycles=%llu inLead{min=%lld mean=%lld max=%lld nearMiss=%u} outLead{min=%lld mean=%lld max=%lld nearMiss=%u}",
-		(unsigned)inIOBufferFrameSize, (unsigned)mJitterMaxNFrames,
-		(unsigned long long)mJitterCycleCount,
-		(long long)mJitterInLeadMin, (long long)inMean, (long long)mJitterInLeadMax,
-		(unsigned)mJitterInNearMiss,
-		(long long)mJitterOutLeadMin, (long long)outMean, (long long)mJitterOutLeadMax,
-		(unsigned)mJitterOutNearMiss);
+		"health cycles=%llu maxBurst=%u nearMiss=%u leadJitter=%llu",
+		(unsigned long long)mHealthCycleCount,
+		(unsigned)mHealthMaxNFrames,
+		(unsigned)mHealthNearMiss,
+		(unsigned long long)mHealthLeadJitter);
 
-	mJitterCycleCount = 0;
-	mJitterInSampleCount = 0; mJitterOutSampleCount = 0;
-	mJitterInNearMiss = 0; mJitterOutNearMiss = 0;
-	mJitterMaxNFrames = 0;
-	mJitterInLeadMin  = INT64_MAX; mJitterInLeadMax  = INT64_MIN; mJitterInLeadSum  = 0;
-	mJitterOutLeadMin = INT64_MAX; mJitterOutLeadMax = INT64_MIN; mJitterOutLeadSum = 0;
+	mHealthCycleCount = 0;
+	mHealthMaxNFrames = 0;
+	mHealthNearMiss = 0;
+	mHealthLeadJitter = 0;
 }
 
 void	SA_Device::DoIOOperation(AudioObjectID inStreamObjectID, UInt32 inOperationID, UInt32 inIOBufferFrameSize, const AudioServerPlugInIOCycleInfo& inIOCycleInfo, void* ioMainBuffer, void* ioSecondaryBuffer)
@@ -1735,7 +1720,7 @@ CFStringRef	SA_Device::HW_CopyDeviceUID()
 // Read a UInt32 from config.plist at init time. Falls back to `def` if the
 // file/key is missing or unparseable. Runs once in _HW_Open; popen cost is
 // irrelevant outside the realtime path.
-static UInt32 read_latency_from_plist(const char* key, UInt32 def) {
+static UInt32 read_uint_from_plist(const char* key, UInt32 def) {
     char cmd[512];
     snprintf(cmd, sizeof(cmd),
         "/usr/libexec/PlistBuddy -c 'Print :%s' "
@@ -1748,6 +1733,14 @@ static UInt32 read_latency_from_plist(const char* key, UInt32 def) {
     pclose(f);
     return val;
 }
+
+// Base end-to-end latency in frames, excluding JitterFrames. Derived from
+// docs/LATENCY-MODEL.md Σ at the documented defaults (48 kHz, pi -p 64,
+// netadapter -g 512 -l 2, MTU 1500): everything except T_jf sums to 722.
+// Both directions are advertised identically; the DAW adds buffer size and
+// SafetyOffset on top, so we do NOT include JitterFrames here.
+static constexpr UInt32 kBaseLatencyFrames = 722;
+static constexpr UInt32 kDefaultJitterFrames = 192;
 
 void	SA_Device::_HW_Open()
 {
@@ -1780,15 +1773,19 @@ void	SA_Device::_HW_Open()
     shmDriverStatus->store(JB_DRV_STATUS_ACTIVE, std::memory_order_release);
     mRingBufferFrameSize = STRBUFNUM / 2;
 
-    // Read reported latency from config.plist. Default ~979 frames matches
-    // the monitoring-trip total in docs/LATENCY-MODEL.md at the default
-    // settings (48 kHz, pi JACK -p 64, netadapter -g 512 -l 2, JitterFrames=256).
-    // DAWs (REAPER, Logic, etc.) add this to the IO buffer size.
-    mReportedLatencyInput  = read_latency_from_plist("ReportedLatencyInputFrames",  979);
-    mReportedLatencyOutput = read_latency_from_plist("ReportedLatencyOutputFrames", 979);
+    // Advertised latency = fixed monitoring-chain base; JitterFrames is
+    // surfaced separately via kAudioDevicePropertySafetyOffset so CoreAudio
+    // can act on it (scheduling the IOProc earlier) instead of just reporting
+    // it. The DAW sums Latency + SafetyOffset, so adding jitter here would
+    // double-count it. See docs/LATENCY-MODEL.md.
+    UInt32 jitter = read_uint_from_plist("JitterFrames", kDefaultJitterFrames);
+    mReportedLatencyInput  = kBaseLatencyFrames;
+    mReportedLatencyOutput = kBaseLatencyFrames;
+    mSafetyOffsetFrames    = jitter;
     JB_LOG_INFO(jb_log_driver(),
-        "device #%u latency input=%u output=%u frames",
-        instance, (unsigned)mReportedLatencyInput, (unsigned)mReportedLatencyOutput);
+        "device #%u latency=%u frames, safetyOffset=%u frames",
+        instance, (unsigned)mReportedLatencyInput,
+        (unsigned)mSafetyOffsetFrames);
 
     JB_LOG_INFO(jb_log_driver(), "device #%u initialized", instance);
 }

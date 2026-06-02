@@ -1,8 +1,85 @@
 # Jitter / crackle investigation
 
-Status as of 2026-05-31. Mac-side jitter is much lower after workgroup
-changes. Pi-side xruns are zero with an empty pedalboard. **Audible clicks
-still persist.** This doc summarizes what we've ruled out and what's left.
+## Status update 2026-06-02 — root cause localized
+
+The "still to try" list below (hops 8/9 — daemon shm read/write path) is
+**not** the cause. New evidence below points to **Mac jackd's netJACK2
+master client (`pistomp`) being preempted under Mac CPU load**.
+
+Evidence:
+
+1. **Reproducer.** Three-finger swipe between desktops on macOS (heavy
+   WindowServer load) reliably produces clicks. CPU pressure on the Mac
+   is the trigger.
+2. **HAL is fine.** Driver-side health log shows `nearMiss=0` and
+   `leadJitter ≈ 1 frame/cycle` even during the swipe. CoreAudio IOProc
+   is not being starved.
+3. **`kAudioDevicePropertySafetyOffset` doesn't help.** Tested at 192,
+   1024, and 4096 frames: identical click rate. (See "the SafetyOffset
+   experiment" below.)
+4. **xrun client identity.** `/tmp/com.jackbridge.jackd.err.log` shows
+   every xrun is `client = pistomp was not finished, state = Running`
+   immediately followed by `client = JackBridge #1 was not finished,
+   state = Triggered`. Our daemon never even starts the failed cycle
+   — it's queued behind `pistomp`, which blew its budget.
+5. **Pi-side jackd shows 0 xruns** through all of this. The Pi is
+   processing its half cleanly; the failure is entirely Mac-internal to
+   jackd's netJACK2 master thread.
+6. **jackd's RT threads are PRI 97 (time-constraint policy)** but
+   jackd 1.9.22 does not join the device workgroup. Workgroup-joined
+   threads (our daemon does join) get cooperative scheduling protection
+   against WindowServer pressure that non-joined RT threads do not.
+
+So the actual graph and failure site:
+
+```
+Mac jackd cycle: coreaudio backend → pistomp (netJACK2) → JackBridge #1 (us)
+                                         ↑
+                                  deadline missed here
+                                  (under Mac CPU load)
+```
+
+Implications:
+
+- Hops 8/9 in the table below are **eliminated**: our daemon never runs
+  in the failed cycles, so it cannot be writing torn frames.
+- Hops 1–7 remain eliminated under empty pedalboard.
+- Hop 10 (HAL IOProc) was already eliminated; SafetyOffset experiment
+  reconfirmed.
+- The remaining failure mode is **inside jackd 1.9.22**, specifically
+  its netJACK2 master client thread on macOS under preemption pressure.
+
+### The SafetyOffset experiment (kept here as a record)
+
+We added `kAudioDevicePropertySafetyOffset = JitterFrames` to the HAL,
+expecting that giving CoreAudio more producer-side lead would absorb the
+swipe-induced bunching. Result: zero observable effect on click rate at
+any value 0 → 4096. Driver `nearMiss` counter stays at 0 across the
+range, confirming HAL scheduling is not the bottleneck. Will be torn
+back out in a follow-up commit; preserved here so we don't redo the
+experiment.
+
+### What to try next
+
+Things that *might* help, all targeting the jackd / netJACK2 layer
+rather than JackBridge:
+
+1. **Bump `pistomp` (netJACK2 master) RT priority above 75.** jackd
+   currently runs all clients at the `-P 75` budget; netJACK2's master
+   thread might benefit from being higher. Or split: keep the backend at
+   75, give netJACK2 master 80.
+2. **Pin `pistomp` to an E-core or to a specific P-core.** Avoids
+   contention with WindowServer, which prefers P-cores.
+3. **Increase Mac PeriodFrames from 64 to 128.** Doubles netJACK2
+   master's budget per cycle. Costs latency (one more T_mj = 1.33 ms);
+   may be acceptable if it eliminates clicks.
+4. **Try jackd 1.9.23+ if it adds workgroup support.** Speculative —
+   needs source check.
+5. **File an upstream jack2 issue** with the evidence above. The cause
+   is jack2 not being workgroup-aware on Apple Silicon.
+
+The text below (mental model and prior "still to try" list) is
+preserved for context but **is no longer the right place to look**.
 
 ---
 

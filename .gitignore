@@ -5,3 +5,4 @@ tools/stress_atomic.dSYM/
 cscope.*
 xcuserdata
 dist/
+build/
