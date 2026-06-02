@@ -39,6 +39,8 @@ SOFTWARE.
 #include "JackBridge.h"
 #include "jb_log.hpp"
 #include "workgroup.hpp"
+#include "RingProjector.hpp"
+#include "RingCopy.hpp"
 
 // Set in main() before jack_activate; read by the port-registration callback to
 // wake the main thread out of sigwait when slave ports come or go. Notification
@@ -469,29 +471,34 @@ private:
     std::atomic<uint32_t> mXRunCount{0};
     std::atomic<uint32_t> mSnapCount{0};
 
-    int sendToCoreAudio(float** in,int nframes) {
-        unsigned int offset = FrameNumber % FramesPerBuffer;
+    int sendToCoreAudio(float** in, int nframes) {
         // FIXME: should be consider buffer overwrapping
-        for(int i=0; i<nframes; i++) {
-            for(int j=0; j<NUM_INPUT_STREAMS; j++) {
-                *(buf_down[j]+(offset+i)*2) = in[j*2][i];
-                *(buf_down[j]+(offset+i)*2+1) = in[j*2+1][i];
-            }
+        // Offset arithmetic lives in RingProjector (testable in isolation).
+        // Today this is open-loop: frame_cursor % ring_frames, with no
+        // reference to the HAL's read head. See investigation-bug1.md and
+        // the TODO in RingProjector::send_offset.
+        const RingProjector proj{ (uint32_t)FramesPerBuffer, FrameNumber };
+        const uint32_t offset = proj.send_offset();
+        for (int j = 0; j < NUM_INPUT_STREAMS; j++) {
+            ring_write_stereo_interleaved(
+                buf_down[j], (uint32_t)FramesPerBuffer, offset,
+                in[j*2 + 0], in[j*2 + 1], nframes);
         }
         return nframes;
     }
 
     int receiveFromCoreAudio(float** out, int nframes) {
-        //unsigned int offset = FrameNumber % FramesPerBuffer;
-        unsigned int offset = (FrameNumber - nframes) % FramesPerBuffer;
         // FIXME: should be consider buffer overwrapping
-        for(int i=0; i<nframes; i++) {
-            for(int j=0; j<NUM_OUTPUT_STREAMS; j++) {
-                out[j*2][i] = *(buf_up[j]+(offset+i)*2);
-                out[j*2+1][i] = *(buf_up[j]+(offset+i)*2+1);
-                *(buf_up[j]+(offset+i)*2) = 0.0f;
-                *(buf_up[j]+(offset+i)*2+1) = 0.0f;
-            }
+        // Offset arithmetic lives in RingProjector (testable in isolation).
+        // The (frame_cursor - nframes) expression is unsigned-arithmetic
+        // underflow-by-design on the first cycle after activation — preserved
+        // bug-for-bug from the inline code. See RingProjector::recv_offset.
+        const RingProjector proj{ (uint32_t)FramesPerBuffer, FrameNumber };
+        const uint32_t offset = proj.recv_offset(nframes);
+        for (int j = 0; j < NUM_OUTPUT_STREAMS; j++) {
+            ring_consume_stereo_interleaved(
+                buf_up[j], (uint32_t)FramesPerBuffer, offset,
+                out[j*2 + 0], out[j*2 + 1], nframes);
         }
         return nframes;
     }
