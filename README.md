@@ -49,13 +49,16 @@ It's almost always the multicast route landing on the wrong interface (Wi-Fi ins
 sudo launchctl kickstart -k system/com.jackbridge.route
 ```
 
-### 4. Audio is silent or distorted
-*   **Version Mismatch:** If you just updated, the HAL driver and daemon might be out of sync.
-    ```sh
-    tools/rmshm  # Unlink stale shared memory
-    # Then reinstall the .pkg
-    ```
-*   **Clock Jitter:** Ensure your Mac isn't under heavy load. Check `log stream --predicate 'subsystem == "com.jackbridge"'` for xrun warnings.
+### 4. Audio is silent but ports are visible
+If `jack_lsp` shows `pistomp` ports but you hear nothing:
+*   **Check Connections:** Run `jack_lsp -c`. Ensure the `pistomp` ports are actually connected to `JackBridge` ports. If not, check `AutoConnect` in your `config.plist`.
+*   **Wait for Sync:** netJACK2's resampler can take 5–10 seconds to stabilize on a fresh connection.
+*   **Pi-Side Check:** SSH into the Pi (`ssh pistomp@pistomp.local`) and run `jack_lsp`. If the Pi doesn't see its own `system` hardware ports, it has nothing to send to the Mac.
+*   **Restart Pi-Stomp:** Sometimes the internal audio engine (`mod-host`) needs a kick. Toggle the "Ethernet Audio" setting off and on again.
+
+### 5. Audio is distorted or has "clicks"
+*   **XRuns:** Check the logs (`jackbridge-ctl logs`). If you see `JackEngine::XRun`, your latency settings are too aggressive.
+*   **Fix:** Increase `JitterFrames` in `config.plist` (try 128 or 256).
 
 ---
 
