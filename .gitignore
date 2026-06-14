@@ -6,3 +6,5 @@ cscope.*
 xcuserdata
 dist/
 build/
+tools/rmshm
+tools/chkshm
