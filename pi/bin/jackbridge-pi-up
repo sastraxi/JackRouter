@@ -11,8 +11,38 @@ WATCHER=/usr/local/libexec/jackbridge/jackbridge-xrun-watcher
 # ../pi-stomp/JACKBRIDGE_RECORDING.md).
 : > "$XRUN_FILE"
 
-# Default multicast group; routing was pinned to end0 by ExecStartPre.
+# Pin the netJACK2 multicast group (225.3.19.154) to the JackBridge
+# interface. Without this, the slave's sendto() and the master's
+# IP_ADD_MEMBERSHIP both consult the unicast default route (wlan0 on
+# the pi, en0 on the Mac), so the master's join lands on the wrong
+# interface and the slave's discovery packet never reaches it. The
+# fork's commit b3bfc408/719d833a adds the JACK_NETJACK_MULTICAST_IF
+# env var; on Linux it's IP_MULTICAST_IF with ip_mreqn.imr_ifindex on
+# the slave socket, on macOS it's IP_BOUND_IF.
 #
+# The auto-detect lives in jackbridge-pin-route (the systemd unit's
+# ExecStartPre=+) — that script picks direct-cable 169.254.x first,
+# then any wired iface with carrier+IPv4, and writes the result to
+# /run/jackbridge.iface. We read it here so the setsockopt pin and
+# the kernel route stay on the same iface. Hardcoding eth0 is wrong on
+# any pi with more than one wired NIC (Pi 5 + USB-C dongle, dual-port
+# USB hubs, etc.); reading the ExecStartPre's state is the single
+# source of truth.
+#
+# Fallback to $JACKBRIDGE_IFACE (if the operator pre-set it via
+# /etc/default/jackbridge) and then eth0 only if the state file is
+# missing — which means jackbridge-pin-route failed and the unit
+# shouldn't have started anyway.
+STATE=/run/jackbridge.iface
+if [ -r "$STATE" ]; then
+    IFACE=$(cat "$STATE")
+elif [ -n "${JACKBRIDGE_IFACE:-}" ]; then
+    IFACE="$JACKBRIDGE_IFACE"
+else
+    IFACE=eth0
+fi
+export JACK_NETJACK_MULTICAST_IF="${JACK_NETJACK_MULTICAST_IF:-$IFACE}"
+
 # netadapter port labels are slave-local (see pi-stomp.md:77):
 #   playback_* = TO master  (audio we send to the Mac)  → -P
 #   capture_*  = FROM master (audio we receive from the Mac) → -C

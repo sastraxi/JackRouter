@@ -58,15 +58,21 @@ If `jack_lsp` shows `pistomp` ports but you hear nothing:
 
 ### 5. Audio is distorted or has "clicks"
 *   **XRuns:** Check the logs (`jackbridge-ctl logs`). If you see `JackEngine::XRun`, your latency settings are too aggressive.
-*   **Fix:** Increase `JitterFrames` in `config.plist` (try 128 or 256).
+*   **Fix:** Increase `PeriodFrames` in `config.plist` (try 128). Avoid raising `JitterFrames` — it defaults to 0 and the multicast-pin path means we no longer need a HAL-side safety lead.
+
+### 6. jackd won't start (or doesn't appear in `jackbridge-ctl status`) on Wi-Fi
+This is intentional, not a bug. The route daemon only enables jackd when a wired/direct-cable interface is up — netJACK2 at 48 kHz × 4 channels will saturate a typical 2.4 GHz link and produce constant xruns. There is no override. Plug an Ethernet cable in (or attach a USB Ethernet adapter) and jackd starts automatically within ~2 seconds. See `docs/architecture.md` for the clock-domain rationale and why we don't add SRC.
 
 ---
 
 ## Installation
 
-1. Install [JACK2](https://github.com/jackaudio/jack2-releases/releases) (1.9.22+). Required at runtime.
-2. Download the latest `JackBridge-x.y.z.pkg` from Releases. Double-click and run.
-3. Trust the unsigned package manually (Right-click > Open).
+Get the latest release from the [Releases page](https://github.com/sastraxi/JackRouter/releases). Each release attaches two `.pkg` files — install both, in order:
+
+1. **`jack2-<version>.pkg`** — the JACK2 fork we depend on. Stock `jackaudio/jack2` 1.9.22 is missing the multicast-interface pin; without this fork, netJACK2's discovery times out on hosts with both wifi and a direct-cable NIC. The package installs to `/usr/local` (the manual-install prefix on Apple Silicon; Homebrew is at `/opt/homebrew` and the two are intentionally separate).
+2. **`JackBridge-<version>.pkg`** — the HAL driver, the `JackBridged` daemon, the LaunchAgents, the route watcher, and the `jackd-launch` wrapper. Double-click and run. Trust the unsigned package manually (Right-click > Open) on first install.
+
+Re-running the same `JackBridge-<version>.pkg` is safe — the postinstall preserves a hand-edited `config.plist` and only re-bootstraps the LaunchAgents.
 
 ### Building Tools (Optional)
 If you are working from source, compile the helper utilities:

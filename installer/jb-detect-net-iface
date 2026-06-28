@@ -12,6 +12,10 @@
 # name on stdout, or non-zero exit + stderr message.
 set -eu
 
+# Sourced helper exposes is_wifi_iface. Lives next to us in $SUPPORT.
+SUPPORT_DIR="$(cd "$(dirname "$0")" && pwd)"
+. "$SUPPORT_DIR/jb-is-wifi-iface"
+
 override="${1:-${JACKBRIDGE_IFACE:-}}"
 if [ -n "$override" ]; then
     if /sbin/ifconfig "$override" >/dev/null 2>&1; then
@@ -20,18 +24,6 @@ if [ -n "$override" ]; then
     fi
     echo "jb-detect-net-iface: override iface '$override' not present; falling through." >&2
 fi
-
-# Wifi devices, per Hardware Port classification.
-wifi_ifs=$(
-    /usr/sbin/networksetup -listallhardwareports 2>/dev/null | awk '
-        /^Hardware Port:/ { wifi = ($0 ~ /Wi-Fi/) }
-        /^Device:/ { if (wifi) print $2 }
-    '
-)
-is_wifi() {
-    for w in $wifi_ifs; do [ "$w" = "$1" ] && return 0; done
-    return 1
-}
 
 # Walk active ifaces, pick the first match in each category.
 direct=""; wired=""; wifi=""
@@ -44,7 +36,7 @@ for i in $(/sbin/ifconfig -lu); do
             [ -z "$direct" ] && direct=$i
             ;;
         *)
-            if is_wifi "$i"; then
+            if is_wifi_iface "$i"; then
                 [ -z "$wifi" ] && wifi=$i
             else
                 [ -z "$wired" ] && wired=$i

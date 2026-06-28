@@ -61,6 +61,14 @@ XCBUILD_ARGS=(
     CONFIGURATION_BUILD_DIR="$BUILD/xcode"
     "JACK_PREFIX=$JACK_PREFIX"
 )
+# Default ARCHS follows the xcodeproj ("arm64 x86_64" — universal).
+# Override with ARCHS=arm64 for a single-arch dev build when the host's
+# $JACK_PREFIX is arm64-only (the common case for a Homebrew/manual
+# install on Apple Silicon). A universal release build needs a
+# universal libjack at $JACK_PREFIX.
+if [[ -n "${ARCHS:-}" ]]; then
+    XCBUILD_ARGS+=(ARCHS="$ARCHS")
+fi
 if [[ -n "${SIGN_APP_IDENTITY:-}" ]]; then
     XCBUILD_ARGS+=(CODE_SIGN_IDENTITY="$SIGN_APP_IDENTITY" CODE_SIGN_STYLE=Manual OTHER_CODE_SIGN_FLAGS="--timestamp")
 fi
@@ -81,6 +89,7 @@ cp    "$BUILD/xcode/jb-detect-builtin"       "$STAGING/Library/Application Suppo
 cp    "$BUILD/xcode/jb-rmshm"                "$STAGING/Library/Application Support/JackBridge/"
 install -m 0755 "$INSTALLER/jackd-launch"          "$STAGING/Library/Application Support/JackBridge/jackd-launch"
 install -m 0755 "$INSTALLER/jb-detect-net-iface"      "$STAGING/Library/Application Support/JackBridge/jb-detect-net-iface"
+install -m 0755 "$INSTALLER/jb-is-wifi-iface"         "$STAGING/Library/Application Support/JackBridge/jb-is-wifi-iface"
 install -m 0755 "$INSTALLER/jackbridge-pin-route"     "$STAGING/Library/Application Support/JackBridge/jackbridge-pin-route"
 install -m 0755 "$INSTALLER/jackbridge-route-watcher" "$STAGING/Library/Application Support/JackBridge/jackbridge-route-watcher"
 install -m 0755 "$ROOT/tools/jackbridge-ctl"       "$STAGING/Library/Application Support/JackBridge/jackbridge-ctl"

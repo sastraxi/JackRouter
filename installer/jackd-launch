@@ -80,7 +80,13 @@ done
 if [ ! -f "$ROUTE_STATE" ]; then
     echo "jackd-launch: multicast route not pinned after 10 s — netmanager may fail to join the group" >&2
 else
-    echo "jackd-launch: multicast route pinned to $(cat $ROUTE_STATE)" >&2
+    # Source of truth for the wired iface: jackbridge-pin-route writes it
+    # to /var/run/jackbridge-route.iface on every transition. Use the same
+    # value as the IP_BOUND_IF setsockopt pin on netmanager's socket, so
+    # the join and the kernel's route table stay in agreement.
+    WIRED_IFACE=$(cat "$ROUTE_STATE")
+    export JACK_NETJACK_MULTICAST_IF="$WIRED_IFACE"
+    echo "jackd-launch: multicast route pinned to $WIRED_IFACE" >&2
 fi
 
 # `-P <uid>` (playback-only) rather than `-d ~:<uid>` (duplex): the typical
@@ -95,11 +101,15 @@ fi
 # Sourced from config.plist `PeriodFrames` (default 64).
 "$JACKD" -R -P 75 -d coreaudio -P "$CLOCK_UID" -r 48000 -p "$PERIOD_FRAMES" &
 JACKD_PID=$!
-# Publish jackd's PID so jackbridge-route-watcher can kill it when the
-# network interface changes (e.g. Ethernet cable plugged in hours later).
-# /tmp is world-writable; the watcher runs as root so can read it fine.
+# Publish jackd's PID for diagnostics; cleaned up via trap below.
 JACKD_PID_FILE=/tmp/jackbridge-jackd.pid
 echo "$JACKD_PID" > "$JACKD_PID_FILE"
+# On any exit — clean shutdown, set -e failure, or SIGTERM from launchd's
+# bootout when the route watcher stops us — kill jackd too. jackd is a
+# background child of this script; without an explicit kill, the script
+# exits and jackd is orphaned under launchd, holding the JACK server
+# socket and stale netmanager multicast group membership.
+trap 'kill "$JACKD_PID" 2>/dev/null || true; rm -f "$JACKD_PID_FILE"' EXIT INT TERM
 
 # Wait for jackd to be ready, then load netmanager. Both probe and load can
 # fail transiently while coreaudiod is mid-restart cascade after a clock
@@ -130,4 +140,3 @@ elif [ "$jackd_ready" != "1" ]; then
 fi
 
 wait "$JACKD_PID"
-rm -f "$JACKD_PID_FILE"
