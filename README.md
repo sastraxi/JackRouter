@@ -4,13 +4,9 @@ A macOS JACK ↔ CoreAudio bridge: presents a virtual **JackBridge** audio devic
 
 The primary use case is a Raspberry Pi running netJACK2 over Ethernet as a recording interface for Mac DAWs (Logic, Pro Tools, REAPER).
 
-**Apple Silicon only** (arm64). Intel Macs are not supported — the
-`.pkg` files on the [Releases](https://github.com/sastraxi/JackRouter/releases)
-page are arm64-only and the install will fail on x86_64.
+**Apple Silicon only** (arm64). Intel Macs are not supported — the `.pkg` files on the [Releases](https://github.com/sastraxi/JackRouter/releases) page are arm64-only and the install will fail on x86_64.
 
 ---
-
-## Daily Workflow (Ongoing Use)
 
 ## Daily Workflow (Ongoing Use)
 
