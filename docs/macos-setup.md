@@ -98,7 +98,7 @@ launchctl bootout  gui/$(id -u)/com.jackbridge.jackd
 
 ### What happens if the daemon refuses to start?
 
-The daemon validates jackd's CoreAudio backend on startup (§2.5 + §2.6 in `PLAN.md`):
+The daemon validates jackd's CoreAudio backend on startup (see `plans/PLAN.md` history — phase 2.5 + 2.6):
 - No `system:playback_1` port, or no aliases on it → jackd's backend isn't `coreaudio`. Refuse.
 - Alias contains `"JackBridge"` → jackd is clocked off JackBridge itself, which creates a CoreAudio feedback loop. Refuse.
 

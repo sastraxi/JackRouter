@@ -88,7 +88,14 @@ Full list with file/line citations: `docs/idiosyncrasies.md`.
 
 - **Same-clock-domain assumption is load-bearing.** Mac jackd must run with the CoreAudio backend pinned to a stable hardware device; netJACK2 runs as an internal JACK client and handles the Pi↔Mac clock crossing itself. Do not add SRC to JackBridge — that's netJACK2's job. See `docs/architecture.md`.
 - **Realtime safety in audio paths.** No allocation, no syscalls, no logging, no locks in the HAL IO proc or the daemon's JACK process callback. Ring-buffer memcpy only.
-- **Apple Silicon first.** Test on arm64 hardware, not just under Rosetta. Universal binaries are produced but arm64 is the primary target.
+- **Apple Silicon only.** Intel Macs are not supported. The Xcode project
+  *can* produce a universal binary (`arm64 x86_64`) and the
+  `jackbridge-pi-up` shell scripts are arch-agnostic, but the released
+  `.pkg` files on the GitHub Releases page are arm64-only — the
+  jack2 fork's `build-macos-pkg.sh` doesn't yet `lipo` an x86_64
+  build, so the resulting `/usr/local/lib/libjack.dylib` is single-arch
+  and the JackBridge xcodebuild is forced to `ARCHS=arm64` to link.
+  Revisit if a user actually needs Intel support.
 - **Fail loud, not silent.** Refuse to attach on protocol mismatch; refuse to run on the wrong jackd backend; exit on bad `jack_client_open`. LaunchAgent `KeepAlive` + `WatchPaths` on `config.plist` handle restart.
 - **Pragmatic over perfect.** The shm IPC layout, single-device assumption, and 4-in/2-out scope are *fine for the use case* — don't grow them speculatively.
 

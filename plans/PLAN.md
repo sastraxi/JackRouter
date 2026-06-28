@@ -1,240 +1,120 @@
-# JackBridge revival plan
-
-Production-ready macOS JACK ↔ CoreAudio bridge, targeting Sequoia 15.x / Tahoe 26.x on Apple Silicon, in service of the pi-stomp use case: a Raspberry Pi running JACK + netJACK2 as a network audio interface for macOS DAWs.
-
-This plan assumes the architectural decisions in `docs/architecture.md`:
-- Fork of `madhatter68/JackRouter` (not `jackaudio/jack-router`).
-- Two-process design (daemon + AudioServerPlugIn HAL) via POSIX shm.
-- **Config B clock topology**: jackd on Mac uses CoreAudio backend pinned to a stable hardware device (built-in output by default); netJACK2 runs as a JACK client inside jackd and handles Pi↔Mac clock crossing itself. JackBridge sees one clock domain. **No SRC in JackBridge.**
-- Scope: 4-in / 2-out @ 48 kHz. The DAW sees 4 inputs from the pi (raw HW capture pair + post-mod-host wet pair) and sends a stereo monitor return back. See Phase 4 / `pi/README.md` for the recording integration this scope serves.
-
-## Spikes (do first, ~1 day total)
-
-Two unknowns can derail estimates if not de-risked early. Both are short.
-
-### Spike A — sign + load a hello-world AudioServerPlugIn — **PASS (Sequoia)**
-Done on Sequoia 15.7.2 / M1 Pro with ad-hoc sign. Tahoe + Developer ID deferred. See [docs/spike-a-hal-loading.md](docs/spike-a-hal-loading.md).
-
-### Spike B — confirm Config B clock stability — **PARTIAL (30s smoke clean, 1hr deferred)**
-30s smoke at 48k/1024-period clean once Mac jackd is at `-P 75` (default `-P 10` underflows constantly). Mac was on Wi-Fi, so the formal 1hr capture is deferred until wired-Ethernet is in place. See [docs/spike-b-clock-stability.md](docs/spike-b-clock-stability.md). Phase 1.5 must enforce `-P 75`.
-
-### Spike C — characterize Config B round-trip latency — **DONE (Estimated)**
-Same topology as Spike B. Link health verified bi-directionally on wired Ethernet via manual `jack_rec` tests. Due to `jack_iodelay` MLS loop instability (clock drift/resampling sensitivity), results were calculated using the NetJack2 formula calibrated against a successful 1024/2/48k baseline (4145 frames). 49-frame hardware overhead observed on Steinberg UR22C. Recommended default: 256/2 (~22ms). See [docs/spike-c-latency-results.md](docs/spike-c-latency-results.md) for the full matrix.
-
----
-
-## Phase 1 — Build + load on current macOS (4–6 days)
-
-**Goal:** universal binary, signed, notarized, loads on Sequoia/Tahoe Apple Silicon. Existing (buggy) sync code unchanged. End-to-end audio passes, even if it eventually drifts.
-
-### 1.1 Xcode project modernization — **DONE**
-Universal `.driver` (arm64 + x86_64) builds clean under Xcode 26.3 / SDK 26.2 with `MACOSX_DEPLOYMENT_TARGET=13.0`, `CLANG_CXX_LANGUAGE_STANDARD=c++17`, `ALWAYS_SEARCH_USER_PATHS=NO`, `ONLY_ACTIVE_ARCH=NO` for Release. PublicUtility headers all compile clean against the current SDK — no overlap conflicts to resolve; pruning unused headers (CAVolumeCurve, CAGuard, CAHostTimeBase) folds into Phase 3 dead-code deletion. Only outstanding warnings are 6 pre-existing sign-compare instances in `SA_Device.cpp`. Smoke-loading the built `.driver` is Phase 1.6.
-
-### 1.2 Daemon Xcode target — **DONE**
-`JackBridged` CLI tool target added to `driver/JackBridgePlugIn.xcodeproj` alongside the driver. Universal (arm64 + x86_64), links `/usr/local/lib/libjack.0.dylib` + CoreAudio/CoreFoundation/CoreMIDI, deployment target 13.0, c++17. `daemon/build.sh` deleted. Recovered `jackClient.{cpp,hpp}` from git (Phase 3.5 dead-code sweep had nuked `libs/` while symlinks in `daemon/` still pointed there); `daemon/JackBridge.h` stays a symlink to the driver copy until Phase 2.1 deduplicates the IPC header properly. Source-level signing entitlements are Phase 1.3.
-
-### 1.3 Codesigning + entitlements — **DONE**
-`ENABLE_HARDENED_RUNTIME=YES` set at the project level (applies to both targets). `daemon/daemon.entitlements` written with `com.apple.security.cs.disable-library-validation`; wired to the `JackBridged` target via `CODE_SIGN_ENTITLEMENTS`. Driver target carries no entitlements. Local builds ad-hoc-sign with `-o runtime` (verified: `codesign -dvv` shows `flags=adhoc,runtime`, daemon has the entitlement, driver has none). Developer ID identity is intentionally not baked in — the release pipeline (Phase 1.4 / 3.6) overrides `CODE_SIGN_IDENTITY` at `xcodebuild` time using the sequence already drafted in `docs/macos-setup.md`. Cert provisioning itself is the operator's job, not the project's.
-
-### 1.4 Installer pipeline — **DONE (LaunchAgents deferred to 1.5)**
-`installer/build-pkg.sh` orchestrates `xcodebuild` (both targets, Release) → staging → `pkgbuild` → `productbuild` → optional `notarytool submit --wait` + `stapler staple`. Distribution xml lives at `installer/distribution.xml.in` (versioned via `@VERSION@` substitution; pins min macOS 13.0, arm64+x86_64). Postinstall script is `installer/scripts/postinstall` — currently just `killall coreaudiod`; LaunchAgent registration lands in 1.5 alongside the plists themselves. Local smoke produces `installer/build/JackBridge-<ver>.pkg` with driver at `/Library/Audio/Plug-Ins/HAL/JackBridgePlugIn.driver` and daemon at `/Library/Application Support/JackBridge/JackBridged`; signing/notarization gate on `SIGN_APP_IDENTITY` / `SIGN_INSTALLER_IDENTITY` / `NOTARY_PROFILE` env vars so the same script serves dev and release. A dummy notarized submission (per the riskiest-unknowns note) still needs to be run once a Developer ID cert is in hand.
-
-### 1.5 LaunchAgent plists — **DONE**
-Two LaunchAgents under `installer/launchagents/`: `com.jackbridge.daemon.plist` runs `JackBridged`; `com.jackbridge.jackd.plist` runs `jackd-launch`. Both are `LimitLoadToSessionType=Aqua`, `KeepAlive`, `RunAtLoad`, `ProcessType=Interactive`; logs to `/tmp/<label>.{out,err}.log` for now (3.3 swaps in `os_log`). `installer/jackd-launch` wraps `jackd -R -P 75 -d coreaudio -d ~:<ClockDeviceUID> -r 48000 -p 128` then `jack_load netmanager` — reads `ClockDeviceUID` from `config.plist`, auto-detects via `jb-detect-builtin` when unset (Phase 3.1). `build-pkg.sh` now stages the plists into `/Library/LaunchAgents/` and the wrapper alongside the daemon binary. Postinstall does the usual `killall coreaudiod` then bootstraps both labels into the active GUI user's session via `launchctl bootstrap gui/<uid>` so install-time activation doesn't require a logout cycle; the `Aqua` session-type constraint still gates auto-load for subsequent logins. `plutil -lint` clean on both plists.
-
-### 1.6 Smoke test (½ day)
-- Clean macOS install. Install `.pkg`. Reboot. Confirm:
-  - JackBridge appears in Audio MIDI Setup.
-  - Daemon + jackd running in `launchctl list`.
-  - REAPER selects JackBridge as device, records 30 sec of audio without immediate failure.
-
-**Phase 1 done when:** end-to-end audio works on Apple Silicon Sequoia/Tahoe. Known to drift over time / break on jackd restart — that's Phase 2.
-
----
-
-## Phase 2 — Apple Silicon correctness + lifecycle (5–7 days)
-
-**Goal:** no torn shm reads on arm64, clean recovery from jackd lifecycle events, defensive checks against misconfiguration.
-
-### 2.1 Deduplicate `JackBridge.h` — **DONE**
-Header moved to `shared/JackBridge.h` (git mv from `driver/JackBridge/Plug-In/JackBridge.h`; `daemon/JackBridge.h` symlink deleted). Both targets pick it up via `HEADER_SEARCH_PATHS=$(SRCROOT)/../shared` at the project level (daemon target uses `$(inherited)` to stack on top of `/usr/local/include`). Added `JACKBRIDGE_PROTOCOL_VERSION 1` — bump on every shm layout change; the refuse-on-mismatch handshake lands in 2.3. CLAUDE.md's "byte-duplicated header" note updated. No workspace was needed — both targets already live in the same `.xcodeproj`, and a workspace would just be ceremony around the single project. Both targets build clean against the new path.
-
-### 2.2 Replace `volatile` with `std::atomic` — **DONE**
-All shm sync fields in `JackBridgeDriverIF` now `std::atomic<uint64_t>*` (kept uint64_t storage throughout — preserves the on-disk layout, so the only contract change is sync semantics, not offsets/sizes). `attach_shm` uses `reinterpret_cast<std::atomic<uint64_t>*>` over the mmap'd region; three `static_assert`s in `shared/JackBridge.h` pin down size, alignment, and `is_always_lock_free` so a future toolchain regression breaks the build instead of silently corrupting the IPC. Daemon (~13 sites) and HAL (~11 sites) rewritten to explicit `->load(acquire)` / `->store(release)`; status-flag writes that previously assigned through both `mDriverStatus` and `*shmDriverStatus` are now split so the atomic store is unambiguous. `JACKBRIDGE_PROTOCOL_VERSION` bumped 1 → 2.
-
-Stress test: `tools/stress_atomic.cpp` — universal binary, fork-based producer/consumer over POSIX shm. Two invariants checked: torn-read detection via `(i<<32)|i` mirrored values, and acquire-release pairing via a non-atomic buffer published behind a release-store seq. 5M iterations clean on both arm64 and x86_64 (10.5M / 17M consumer reads respectively, zero violations). Build line in the header — not an Xcode target, this is a one-shot verification utility.
-
-The plan's recommendation of `uint32_t` for status flags was skipped: shrinking would force an offset re-layout for no measurable benefit on either target arch. Revisit if a future bump needs the four bytes.
-
-### 2.3 Heartbeat + version stamp — **DONE**
-New shm fields at offsets 0x130 (`shmProtocolVersion`) and 0x138 (`shmDaemonAlive`); `JACKBRIDGE_PROTOCOL_VERSION` bumped 2 → 3. Version handshake centralized as `JackBridgeDriverIF::check_protocol_version()` — first-attacher writes, second validates; on mismatch both sides log loudly and exit (daemon `exit(1)`, HAL throws `kAudioHardwareBadDeviceError` from `_HW_Open`). Daemon `process_callback` ticks `shmDaemonAlive` with relaxed `fetch_add`. HAL tracks last-seen counter + host time in `mLastDaemonAlive` / `mLastDaemonAliveHostTime`; `GetZeroTimeStamp` flips `mDeviceIsAlive` (std::atomic<bool>) to false once `now - lastChange > 5 * HostTicksPerRingBuffer` and fires `Host_PropertiesChanged` for `kAudioDevicePropertyDeviceIsAlive` so the DAW disconnects rather than hanging on stale-buffer silence. The property getter now reads `mDeviceIsAlive` instead of hardcoded `1`; `ReadInputData` zeroes the destination when dead. Re-arm on `_HW_StartIO` so a daemon restart recovers without unloading the device. Built clean Debug both arches; runtime soak gates on hardware in 2.8.
-
-### 2.4 `jack_on_shutdown` + signal handling — **DONE**
-`JackClient` grew a virtual `on_shutdown()` hook + a `jack_on_shutdown(client, _on_shutdown, this)` registration in `activate()` (replacing the long-standing commented-out line at `jackClient.cpp:132`). `JackBridge::on_shutdown` zeros `shmDaemonAlive` and stamps `shmDriverStatus = INIT` so the HAL watchdog flips DeviceIsAlive immediately rather than waiting out the 5-cycle threshold, then `kill(getpid(), SIGTERM)` to wake `main()`. `main()` now does `pthread_sigmask(SIG_BLOCK, {SIGINT, SIGTERM})` before `activate()` so JACK's threads inherit the mask and the on_shutdown self-raise is steered to the main-thread `sigwait()` — that returns, we `delete jackBridge[0]` (which calls `jack_client_close`), and exit 0. We intentionally do NOT `shm_unlink` on the way out: the HAL is the shm owner, so unlinking would force a recreate cycle on next reconnect; the heartbeat-zeroing is the in-band liveness signal. LaunchAgent `KeepAlive` (1.5) restarts us when jackd is back. `tools/rmshm.c` is still the manual escape hatch — Phase 3.5 calls out updating it.
-
-### 2.5 + 2.6 jackd backend + feedback-loop check — **DONE**
-Combined into a single `JackBridge::check_jack_backend()` call from the ctor, after the protocol-version check. JACK's public API doesn't expose the backend driver name, so we read `jack_port_get_aliases` on `system:playback_1`: JACK2's CoreAudio backend stamps aliases derived from the underlying CoreAudio device's friendly name; the net backend leaves them empty. Two checks, one pass:
-- No `system:playback_1` *or* zero aliases → backend isn't `coreaudio`. Refuse with a `docs/macos-setup.md` pointer.
-- Alias contains `"JackBridge"` (the HAL device's display name from `Localizable.strings`) → jackd is clocked off ourselves, directly or via an aggregate whose name includes "JackBridge". Refuse with a `config.plist` / `docs/idiosyncrasies.md` pointer.
-Failures log via `os_log` (subsystem `com.jackbridge`, category `jack`) and `exit(1)`. `KeepAlive=true` means launchd respawns on its 10s throttle; `WatchPaths` on `config.plist` triggers immediate restart when the user saves a fix. Instant exit was a deliberate choice over a `sleep(60)` throttle — the latter complicates the WatchPaths recovery path and the 10s throttle is fine.
-
-The aggregate sub-device enumeration originally planned for 2.6 (via `kAudioAggregateDevicePropertyActiveSubDeviceList`) is skipped: the alias check catches the common case (aggregate named "JackBridge Clock" or similar), and chasing the corner case (user-built aggregate with arbitrary name that includes our HAL as a sub-device) would require pulling CoreAudio into the daemon for marginal benefit. `docs/idiosyncrasies.md` keeps the user-facing warning.
-
-### 2.6 — folded into 2.5 (see above)
-
-### 2.7 Loud failure on `jack_client_open` — **PARTIAL (silent-return fixed; broader audit deferred)**
-`JackClient` ctor now logs the jackd status word + a pointer to `docs/macos-setup.md` and `exit(1)` instead of returning with `client == nullptr` and letting the next jack_* call segfault. The broader return-code audit across CoreAudio / JACK calls is still owed — folded into 2.5/2.6 for the jackd-side checks and otherwise into Phase 3 polish.
-
-### 2.8 Soak test (1 day)
-- 24-hour continuous run on real hardware (Pi → Mac, music playing through DAW). Zero clicks, zero hangs.
-- Kill jackd mid-run, confirm DAW disconnects cleanly within one cycle.
-- Restart jackd, confirm daemon reattaches without manual intervention.
-
-**Phase 2 done when:** the system is robust to lifecycle disturbances and runs cleanly for a day on Apple Silicon.
-
----
-
-## Phase 3 — Production polish (4–6 days)
-
-**Goal:** shippable. End-user friendly install, sensible defaults, good diagnostics.
-
-### 3.1 Clock-device auto-detection — **DONE**
-Scope simplified vs original plan: dropped the aggregate-device wrapper. Adding a CoreAudio aggregate over built-in output had no measurable clock-stability gain (built-in device UIDs are already stable across reboots) and introduced a phantom `"JackBridge Clock"` device in every DAW's picker. Direct device UID with PlistBuddy-overridable config is simpler and has no UX wart.
-
-`installer/jb-detect-builtin.c` is a small C tool (~100 lines) that enumerates `kAudioHardwarePropertyDevices`, filters for transport-type `BuiltIn` with output streams, and prints the first match's UID to stdout. New Xcode target in `JackBridgePlugIn.xcodeproj` builds it as a universal Mach-O with hardened runtime; `build-pkg.sh` stages it to `/Library/Application Support/JackBridge/jb-detect-builtin`.
-
-`jackd-launch` reads `ClockDeviceUID` from `/Library/Application Support/JackBridge/config.plist` via PlistBuddy. Empty (default) → invoke the helper; non-empty → use as-is. If both fail, log loudly and exit non-zero (LaunchAgent KeepAlive retries with backoff). The legacy `aggregate-uid` file path is gone.
-
-Headless Macs with no built-in audio (Mac mini / Studio with only HDMI) must set `ClockDeviceUID` explicitly — documented in `config.plist` comments and `docs/macos-setup.md`.
-
-### 3.2 Meaningful channel labels — **DONE**
-HAL exposes per-channel `kAudioObjectPropertyElementName` at both Stream and
-Device scope. Stream-scope handler maps `(streamIdx, mElement)` to the labels;
-Device-scope handler (REAPER's query path) maps `(mScope=Input/Output,
-mElement=1..N)` to the same set: In1, In2, ModOut1, ModOut2 on the input side
-(2 HW capture + 2 mod-host wet from the pi); Out1, Out2 on the output side
-(stereo monitor return). Two parallel handlers because hosts walk either
-scope — Logic uses Stream, REAPER uses Device. Both registered in
-HasProperty / GetPropertyDataSize / GetPropertyData.
-
-### 3.3 Logging via `os_log` — **DONE**
-New `shared/jb_log.hpp` shim wraps `os_log_create("com.jackbridge", …)` with categories `daemon`, `driver`, `shm`, `jack` and `JB_LOG_{ERR,INFO,DEFAULT,DEBUG}` macros that pass format-string literals (so they aren't redacted as `<private>`; `%{public}s` is used where caller-supplied strings need to be visible). Plan claimed the HAL already used `os_log` — it didn't, it was on raw `syslog`. Both targets now route everything through the shim: daemon attach/shutdown/version/heartbeat paths, plug-in StaticInitializer/CreateDevices, device init/StartIO/StopIO, watchdog flip. Two known caveats: (1) the inside-RT verbose `printf`s inside `process_callback` / `check_progress` are left alone with a FIXME — pre-existing RT-safety violation, not 3.3's job to fix; (2) usage/help text on argv parsing still goes to `stderr` because that path is operator-CLI-invoked, not LaunchAgent-invoked. Tail with `log stream --predicate 'subsystem == "com.jackbridge"'`.
-
-### 3.4 Plist-based config — **PARTIAL (defaults file + WatchPaths landed; parsing deferred)**
-Default `config.plist` is staged to `/Library/Application Support/JackBridge/config.plist` by `installer/build-pkg.sh`; both LaunchAgents have `WatchPaths` pointing at it, so a save triggers `launchctl` to restart jackd + daemon automatically. Schema documented in-file. Currently informational only — no consumer reads it yet. Full wire-up is 3.4.x below.
-
-### 3.4.1 Reader shim (½ day)
-- `shared/jb_config.{hpp,cpp}` — single source of truth for parsing. C++ side (daemon) uses `CFPreferencesCopyAppValue` / `CFPropertyListCreateWithData` against the absolute path; shell side (`jackd-launch`) uses `/usr/libexec/PlistBuddy -c "Print :<key>"` with `2>/dev/null || echo <default>` fallbacks. Missing file = all defaults. Missing key = that key's default. Malformed file = log loudly, fall back to defaults, do **not** refuse to start (fail-loud-but-keep-going; an unreadable config shouldn't brick audio).
-- Defaults live in code, not in the installed file. The installed file is purely a template the user can edit; deleting it must still produce a working system on next restart.
-
-### 3.4.2 jackd-launch consumption (¼ day)
-- Read `SampleRate`, `PeriodFrames`, `RealtimePriority`, `ClockDeviceUID`, `NetJack:MTU` via PlistBuddy. (`ClockDeviceUID` wiring landed in 3.1.)
-- `RealtimePriority < 75` logs a warning citing Spike B before honoring it.
-- MTU passes through to `jack_load netmanager -i "--mtu <n>"`.
-
-### 3.4.3 Daemon consumption (½ day)
-- `AutoConnect.{ToNetmanager,FromNetmanager,LocalMonitoring}` drive a post-`jack_activate` wiring pass: enumerate `netmanager:*` and `system:playback_*` ports, `jack_connect` per the policy. Reconnect on JackPortRegistration callbacks so connections survive netmanager (re)loads.
-- `Logging.Level` maps to the `jb_log` shim's threshold (error/warn/info/debug → `OS_LOG_TYPE_*`).
-- All reads happen once at startup. SIGHUP handler deferred — `WatchPaths`-triggered full restart is the reload mechanism and it's good enough; no incremental reload until profiling says otherwise.
-
-### 3.4.4 Upgrade safety (¼ day)
-- pkg currently overwrites `config.plist` on upgrade, which would clobber user edits. Move the file out of the component payload and have `postinstall` write it only if absent (`[ -f "$DEST" ] || install ...`). Bundle the default as a sibling `config.plist.default` for diffing.
-- No migration owed: the `aggregate-uid` file never shipped in a released build (Phase 3.1 reframed before that landed).
-
-### 3.5 Delete dead code — **DONE**
-`libs/`, `driver/ReadMe.txt`, and the unused PublicUtility files (`CADebugger`, `CAGuard`, `CAVolumeCurve`) all deleted. README's `JackBridge` branch reference fixed. `tools/rmshm.c` already targets `/JackBridge`; the additional `/jackrouter` + `/jackrouter2` unlinks are intentional upgrade cleanup for users coming from upstream `madhatter68/JackRouter` — CLAUDE.md updated to reflect that it's a feature, not vestigial.
-
-### 3.6 Notarized installer pipeline in CI — **DONE (pending end-to-end run with real secrets)**
-Two workflows under `.github/workflows/`:
-- `ci.yml` — PR + master push smoke build. Installs JACK2 via Homebrew, shims `/opt/homebrew/{include,lib}/jack*` into `/usr/local/{include,lib}` so the daemon target's hardcoded paths still resolve on arm64 runners, then `xcodebuild` Release for both targets, both arches. No signing.
-- `release.yml` — fires on `v*.*.*` tag push. Imports the Developer ID `.p12` (base64-encoded in `APPLE_DEVELOPER_ID_CERT_P12`) into a per-run keychain, `set-key-partition-list` to silence codesign prompts, `notarytool store-credentials` for a `jackbridge-notary` keychain profile, then `installer/build-pkg.sh "$version"` with `SIGN_APP_IDENTITY` / `SIGN_INSTALLER_IDENTITY` / `NOTARY_PROFILE` env vars. Keychain is torn down in an `if: always()` step. `softprops/action-gh-release@v2` attaches the `.pkg` to a generated release.
-Required secrets are documented at the top of `release.yml`. The `/usr/local` shim was retired in the same pass: a project-level `JACK_PREFIX` build setting (default `/usr/local`) now stands in for the three hardcoded daemon-target paths plus the `libjack.0.dylib` file reference, so arm64 Homebrew installs work directly by passing `JACK_PREFIX=/opt/homebrew` (CI workflows do this from `brew --prefix`). `installer/build-pkg.sh` reads the same env var for its preflight check and forwards it to `xcodebuild`.
-
-### 3.7 First-run TCC + permissions (½ day)
-- Installer that prompts for any required permissions (microphone TCC if needed for HAL input recording — verify).
-- Documentation for the inevitable "I have to do what in System Settings?" question.
-
-### 3.8 README + onboarding (½ day)
-- Rewrite README.md targeting end users + downstream pi-stomp integrators.
-- Quick-start: install `.pkg`, install JACK2, plug Ethernet to Pi, open DAW, pick JackBridge.
-- Link into `docs/` for everything else.
-
-### 3.9 Uninstall path (½ day)
-- `jackbridge-ctl uninstall` subcommand: `bootout` both agents in the active GUI session; `rm` the LaunchAgents, HAL bundle, support dir, and `/usr/local/bin/jackbridge-ctl` symlink; invoke `tools/rmshm` to unlink the POSIX shm region; `killall coreaudiod`; `pkgutil --forget com.jackbridge.pkg`; clear `launchctl disable` state for both labels.
-- Ship a double-clickable `Uninstall.command` inside the `.pkg` payload (or alongside the README) that wraps the same logic with `sudo` prompting via `osascript` — most users won't dig out the CLI.
-- Document the manual fallback in `docs/macos-setup.md` (the nine-step `sudo rm -rf …` sequence we drafted in conversation, for users who need to debug a half-installed state).
-- Multi-user case: only the invoking user's GUI session gets `bootout`'d. Other logged-in users keep their agents until logout. Acceptable; documenting.
-
-**Phase 3 done when:** a user with no prior knowledge can install the `.pkg`, plug in a Pi, and have audio in their DAW within 5 minutes.
-
----
-
-## Phase 4 — Pi-stomp integration (DONE)
-
-**Goal:** ship the pi-side service that exposes the pi-stomp as a 4-in / 2-out audio interface over netJACK2, coexisting with its existing performance-pedal stack.
-
-### 4.1 Channel layout flip — **DONE**
-Bumped `JACKBRIDGE_PROTOCOL_VERSION` 3 → 4. Flipped HAL streams from 2-in/4-out to 4-in/2-out (matches the pi-stomp recording layout: 2 channels raw HW capture + 2 channels post-mod-host wet, stereo monitor return). Driver constants (`NUM_INPUT_STREAMS`, `NUM_OUTPUT_STREAMS`) updated; refuse-on-mismatch handshake (2.3) caught a stale driver during testing.
-
-### 4.2 Pi-side systemd service — **DONE**
-New tree under `pi/`:
-- `pi-stomp-jackbridge.service` — Type=simple, `Requires=jack.service`, `After=jack.service mod-host.service`. Coexists with the stock pi-stomp jackd as a *client*, not a replacement — the performance-pedal path (jack.service + mod-host + mod-ui) keeps running. No `WantedBy` — enabled/disabled on demand by the LCD UI (recording-mode toggle).
-- `bin/jackbridge-pi-up` — loads netadapter (`-C 2 -P 4`) into the running jackd, wires `system:capture_{1,2} → netadapter:playback_{1,2}` (raw capture → In1/In2 on the Mac), `mod-monitor:out_{1,2} → netadapter:playback_{3,4}` (post-mod-host wet → ModOut1/ModOut2), and `netadapter:capture_{1,2} → system:playback_{1,2}` (Mac monitor return into the pedalboard mix). Source-port filter uses `jack_lsp -p | awk '/properties:.*output/'` so mod-monitor port-name variants resolve safely without picking a sink.
-- `bin/jackbridge-pi-down` — best-effort `jack_unload netadapter`.
-- `bin/jackbridge-xrun-watcher` — tails `journalctl -u jack` for `JackRingBuffer::(Read|Write).*\b(producer|consumer) too slow`, appends epoch timestamps to `/tmp/pi-stomp-jackbridge.xruns`, atomic-rewrites the file on each append filtering entries older than 15 min (contract documented in `../pi-stomp/JACKBRIDGE_RECORDING.md`; UI reads the whole file each poll).
-
-Service unit pins `LimitMEMLOCK=infinity` + `LimitRTPRIO=infinity` to match the stock `jack.service` (without these, `jack_load` / `jack_connect` warn "Cannot lock down N byte memory area" and run unlocked — caught during deployment).
-
-### 4.3 Wired-only interface auto-detection — **DONE**
-On both sides, the netJACK2 multicast group (`225.3.19.154`) is pinned to a specific interface before netadapter / netmanager bind, so the kernel joins the group on the right NIC. The pin is auto-detected with operator override:
-
-- **Pi** (`bin/jb-detect-net-iface`): wired-only — refuses to fall back to wifi (4ch/48k over wireless would just produce mystery xruns). Preference: `$JACKBRIDGE_IFACE` env override > direct-cable iface (169.254.0.0/16 link-local) > any wired iface with carrier. No match = service start fails loudly. `ExecStartPre=+/usr/local/libexec/jackbridge/jackbridge-pin-route` runs as root via the `+` prefix; the matching unpin script reads the recorded iface from `/run/jackbridge.iface` so stop knows what to undo. Operator override via `EnvironmentFile=-/etc/default/jackbridge`.
-- **Mac** (`installer/jb-detect-net-iface`): 3-tier — `NetworkInterface` config.plist override > direct (169.254.x) > any wired iface > Wi-Fi as last resort. `installer/jackbridge-pin-route` runs as root via the new `com.jackbridge.route` system LaunchDaemon. The daemon is a watcher: `jackbridge-route-watcher` runs the pin, then `exec /usr/bin/notifyutil -1 com.apple.system.config.network_change` and blocks until SystemConfiguration broadcasts a network-state change. KeepAlive restarts the wrapper → re-pin. Effect: replug ethernet after boot and the route follows within a few seconds. `WatchPaths` on `config.plist` covers operator edits.
-
-### 4.4 pi/install.sh + pistomp-arch wiring — **DONE**
-- `pi/install.sh` — idempotent installer for the service unit + helpers. Drops scripts into `/usr/local/libexec/jackbridge/`, unit into `/usr/lib/systemd/system/`, `daemon-reload`s. Does **not** `systemctl enable` — the LCD UI owns enable/disable.
-- `pistomp-arch/config.sh` — added `JACKROUTER_REPO` + `JACKROUTER_REF` so the image build clones the JackRouter repo at a pinned ref.
-- `pistomp-arch/scripts/07-services.sh` — clones JackRouter to `/tmp/jackrouter` during image build, runs `bash $JACKROUTER_SRC/pi/install.sh`, cleans up. No state crosses into the image except what `pi/install.sh` writes.
-
-### 4.5 pi-stomp UI hand-off — **IN PROGRESS**
-`../pi-stomp/JACKBRIDGE_RECORDING.md` is the contract document for the pi-stomp coding agent. It adds a UI to the running pi-stomp to enable/disable netJACK2 as well as its own mod->output routing so we can completely control the hardware from our DAW.
-
-**Phase 4 done when:** the pi-stomp UI lands. End-to-end audio at 4-in/2-out 48k/128 with the watcher auto-recovering from cable replug is already verified.
-
----
-
-## Totals & risk
-
-| Phase | Effort |
-|---|---|
-| Spikes | 1 day |
-| Phase 1: build + load | 4–6 days |
-| Phase 2: correctness | 5–7 days |
-| Phase 3: polish | 4–6 days |
-| **Total** | **14–20 person-days** |
-
-### Riskiest unknowns
-
-1. **`coreaudiod` plug-in validation on current macOS.** Spike A de-risks. If Apple has tightened HAL loading further (post-Tahoe), Phase 1 could blow out by a week.
-2. **Config B clock stability.** Spike B de-risks. If clicks appear, Phase 2 grows by ~5 days to add SRC + PI controller in the daemon. Architecture is unchanged; cost is real but bounded.
-3. **Notarization of a binary that `dlopen`s libjack.** The entitlement is documented and used by other projects (see BlackHole, BackgroundMusic), but notarization rejection is opaque. Submit a dummy `.pkg` early in Phase 1 to confirm the pipeline works.
-
-### What this plan deliberately does not include
-
-- **Higher channel counts.** Stays 4-in / 2-out. Out of scope for the pi-stomp use case; revisit only if asked.
-- **Higher sample rates.** Stays 48 kHz. Same reasoning.
-- **JACK-graph patchability** (i.e., making CoreAudio apps visible as JACK ports). The "out of JACK graph scope" property is fine here. Fixing it is a ~10-day rearchitecture for zero benefit in this topology.
-- **Multi-instance support.** The commented-out `NUM_INSTANCES` scaffolding stays commented.
-- **Windows / Linux.** This is the macOS bridge. Other platforms have working ASIO / native JACK paths.
-- **GUI app / menu bar / preferences pane.** LaunchAgent + plist is sufficient. A GUI is post-1.0 nice-to-have, not required for the use case.
-
-### Definition of done
-
-A pi-stomp user can:
-1. Download a notarized `JackBridge-x.y.z.pkg`.
-2. Install it. Reboot.
-3. Plug Ethernet from their Mac into the Pi.
-4. Open Logic / Pro Tools / REAPER, select "JackBridge" as the audio device.
-5. Hear audio from the Pi, send audio to the Pi.
-6. Have it still work 24 hours later.
-7. Have it survive a `jackd` crash and recover automatically.
+# JackBridge — open work
+
+The original revival plan (Phases 1–4) is complete and shipped as
+[`v0.2.0`](https://github.com/sastraxi/JackRouter/releases/tag/v0.2.0).
+See [`docs/releases.md`](releases.md) for the per-release changelog and
+[`docs/architecture.md`](architecture.md) for the design this work
+builds on.
+
+This file is now the **action list** — only items still owed. Already-
+shipped work is intentionally absent; git history is the archive.
+
+## Architectural assumptions (unchanged from the original plan)
+
+- Fork of `madhatter68/JackRouter`. Two-process design (daemon + HAL) via
+  POSIX shm. **Config B clock topology**: jackd on the Mac uses the
+  CoreAudio backend pinned to a stable hardware device; netJACK2 handles
+  Pi↔Mac clock crossing itself. **No SRC in JackBridge.** Scope: 4-in /
+  2-out @ 48 kHz.
+
+## Owed
+
+### 1. Plist config actually consumed — `3.4.1` + `3.4.2` + `3.4.3`
+**~1 day, three changes that belong together.**
+
+The plist is staged, has working `WatchPaths` on it, and is documented
+inline. The daemon and `jackd-launch` together read three keys
+(`ClockDeviceUID`, `PeriodFrames`, `NetworkInterface`). The other six
+documented keys are dead:
+
+- **3.4.1** — `shared/jb_config.{hpp,cpp}` reader shim. Single source of
+  truth for parsing. C++ side via `CFPreferencesCopyAppValue` /
+  `CFPropertyListCreateWithData`; shell side via `PlistBuddy` with
+  `2>/dev/null || true` fallbacks. Missing file = all defaults. Missing
+  key = that key's default. Malformed = log loudly, fall back, do
+  **not** refuse to start.
+- **3.4.2** — `jackd-launch` consumes `SampleRate`, `RealtimePriority`,
+  `NetJack:MTU` in addition to the three already wired.
+  `RealtimePriority < 75` logs a warning citing the spike-B clock
+  stability result. MTU passes through to `jack_load netmanager -i
+  "--mtu <n>"`.
+- **3.4.3** — Daemon consumes `AutoConnect.{ToNetmanager,FromNetmanager,
+  LocalMonitoring}` (post-`jack_activate` wiring pass that survives
+  netmanager reloads) and `Logging.Level` (maps to `jb_log` threshold).
+
+### 2. Uninstall path — `3.9`
+**~½ day. Embarrassing that it doesn't exist yet.**
+
+- `jackbridge-ctl uninstall` subcommand: `bootout` both agents in the
+  active GUI session; remove LaunchAgents, HAL bundle, support dir, and
+  `/usr/local/bin/jackbridge-ctl` symlink; run `tools/rmshm` to unlink
+  the POSIX shm; `killall coreaudiod`; `pkgutil --forget
+  com.jackbridge.pkg`; clear `launchctl disable` state for both labels.
+- Ship a double-clickable `Uninstall.command` inside the `.pkg` payload
+  (or alongside the README) wrapping the same logic with `sudo` via
+  `osascript`.
+- Document the manual fallback in `docs/macos-setup.md`.
+
+### 3. Soak test — `2.8`
+**~1 day, gates a "release" label on future `.pkg` builds.**
+
+24-hour continuous run on real hardware (Pi → Mac, music playing through
+the DAW). Zero clicks, zero hangs. Kill jackd mid-run, confirm the DAW
+disconnects cleanly within one cycle. Restart jackd, confirm the daemon
+reattaches without manual intervention. Has not been run since the
+v0.2.0 fork dependency landed; v0.1.x is the last data point.
+
+### 4. First-run TCC + permissions — `3.7`
+**~½ day, only matters if Apple changed TCC behavior in Tahoe.**
+
+Verify whether the HAL needs microphone TCC on first install (it
+shouldn't — we don't open an input stream — but I haven't actually
+checked). If yes: installer prompts + `docs/macos-setup.md` writeup
+of "I have to do what in System Settings?". Defer until someone
+actually hits the prompt.
+
+### 5. Broader return-code audit — `2.7`
+**~½ day, low priority.**
+
+The `jack_client_open` failure is now loud (the only PARTIAL left in
+2.7). The rest — every `AudioObjectGetPropertyData` / `jack_port_*`
+return-code path — is unchecked. Skip until you're touching that code
+again; the only failure mode is a silent no-op, not a crash.
+
+## Not owed, but worth a follow-up
+
+- **`SLOW-STARTUP.md` (option A)**: 5-line in-process retry loop in the
+  daemon's `JackClient` constructor. `jack_client_open` every 250ms for
+  ~30s, no process exit, no `ThrottleInterval=10s` penalty. Cuts
+  cold-start from "1–2 throttle windows" to "however long jackd takes".
+  The 10s throttle fires on every reboot and on every cable replug
+  (the route daemon `kickstart -k`s the agents on every iface change),
+  so this is a user-visible delay, not a theoretical one.
+
+- **jack2 fork forward-port**: the fork is 4 commits ahead of
+  upstream `v1.9.22-waf`. If a future pi-stomp / JackRouter change
+  needs a newer jack2 base, the fork needs to rebase. Track via the
+  commit-count past `v1.9.22` in `sastraxi/jack2/ChangeLog.rst` —
+  nothing in this repo needs to change unless that drift crosses a
+  breaking change in upstream's WAF or driver structure.
+
+## Riskiest unknowns (unchanged from original plan)
+
+1. **`coreaudiod` plug-in validation on current macOS.** Spike A
+   de-risked on Sequoia 15.7.2; Tahoe with a Developer ID is the next
+   data point (a notarized submission hasn't been run end-to-end
+   yet — `3.6` is "DONE pending end-to-end run with real secrets").
+2. **Config B clock stability.** Spike B de-risked 30s; the 1hr
+   capture is still owed (`2.8`'s soak test).
+3. **Notarization of a binary that `dlopen`s libjack.** The
+   `disable-library-validation` entitlement is in place but unproven
+   end-to-end. Submit a dummy `.pkg` once a Developer ID cert is
+   available.
+
+## What this plan deliberately does not include (unchanged)
+
+- Higher channel counts (stays 4-in / 2-out). Higher sample rates (stays
+  48 kHz). JACK-graph patchability (CoreAudio apps visible as JACK
+  ports). Multi-instance. Windows / Linux. GUI / menu bar / preferences
+  pane. None of these serve the pi-stomp use case; revisit only if
+  asked.
