@@ -1,14 +1,17 @@
 #!/bin/sh
 # Long-running route pinner: re-runs jackbridge-pin-route on every macOS
 # network-state change (cable plug/unplug, link change, lease change, Wi-Fi
-# join, etc).
+# join, etc), and restarts jackd when the pinned interface changes.
 #
 # Lifecycle, paired with KeepAlive=true on com.jackbridge.route:
 #   1. launchd starts us.
-#   2. We pin the multicast route via the detector.
-#   3. We block in `notifyutil -1` until the next network-change notification.
-#   4. notifyutil exits → this script exits → launchd restarts us.
-#   5. GOTO 2.
+#   2. We read the previously-pinned iface (if any).
+#   3. We pin the multicast route via the detector.
+#   4. If the iface changed, we kill jackd (launchd's KeepAlive restarts
+#      jackd-launch, which re-joins the multicast group on the new iface).
+#   5. We block in `notifyutil -1` until the next network-change notification.
+#   6. notifyutil exits → this script exits → launchd restarts us.
+#   7. GOTO 2.
 #
 # Steady state is one sleeping process. Pin-script failures don't tear down
 # the watcher — we want to keep waiting for the network to come back rather
@@ -17,6 +20,29 @@ set -u
 
 SUPPORT="/Library/Application Support/JackBridge"
 PIN="$SUPPORT/jackbridge-pin-route"
+ROUTE_STATE=/var/run/jackbridge-route.iface
+JACKD_PID_FILE=/tmp/jackbridge-jackd.pid
+
+# Snapshot the previously-pinned interface before we re-pin. On the very
+# first run after boot the file won't exist yet, so old_iface is empty and
+# we skip the jackd restart (jackd hasn't started yet — it's waiting for us).
+old_iface=$(cat "$ROUTE_STATE" 2>/dev/null || true)
 
 "$PIN" || true
+
+new_iface=$(cat "$ROUTE_STATE" 2>/dev/null || true)
+
+# Only restart jackd when the interface actually changed AND there was a
+# previous iface (skips the first-boot run where jackd is still waiting for
+# the state file). This means a DHCP renewal that leaves the iface the same
+# never disturbs an active recording session.
+if [ -n "$old_iface" ] && [ -n "$new_iface" ] && [ "$new_iface" != "$old_iface" ]; then
+    if pid=$(cat "$JACKD_PID_FILE" 2>/dev/null) && kill -0 "$pid" 2>/dev/null; then
+        echo "jackbridge-route-watcher: iface changed $old_iface → $new_iface, restarting jackd (pid $pid)" >&2
+        kill "$pid"
+        # jackd-launch cleans up the PID file on exit; launchd KeepAlive
+        # restarts it, and it waits for ROUTE_STATE before loading netmanager.
+    fi
+fi
+
 exec /usr/bin/notifyutil -1 com.apple.system.config.network_change
