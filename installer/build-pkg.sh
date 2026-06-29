@@ -61,14 +61,11 @@ XCBUILD_ARGS=(
     CONFIGURATION_BUILD_DIR="$BUILD/xcode"
     "JACK_PREFIX=$JACK_PREFIX"
 )
-# Default ARCHS follows the xcodeproj ("arm64 x86_64" — universal).
-# Override with ARCHS=arm64 for a single-arch dev build when the host's
-# $JACK_PREFIX is arm64-only (the common case for a Homebrew/manual
-# install on Apple Silicon). A universal release build needs a
-# universal libjack at $JACK_PREFIX.
-if [[ -n "${ARCHS:-}" ]]; then
-    XCBUILD_ARGS+=(ARCHS="$ARCHS")
-fi
+# Default ARCHS is arm64-only because the sastraxi/jack2 fork's
+# build-macos-pkg.sh produces a single-arch libjack. Override with
+# ARCHS="arm64 x86_64" for a universal build (requires a universal
+# libjack at $JACK_PREFIX).
+XCBUILD_ARGS+=(ARCHS="${ARCHS:-arm64}")
 if [[ -n "${SIGN_APP_IDENTITY:-}" ]]; then
     XCBUILD_ARGS+=(CODE_SIGN_IDENTITY="$SIGN_APP_IDENTITY" CODE_SIGN_STYLE=Manual OTHER_CODE_SIGN_FLAGS="--timestamp")
 fi

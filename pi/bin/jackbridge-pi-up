@@ -43,6 +43,17 @@ else
 fi
 export JACK_NETJACK_MULTICAST_IF="${JACK_NETJACK_MULTICAST_IF:-$IFACE}"
 
+# Unload any stale netadapter instances left from a previous run. The
+# ExecStop= handler (jackbridge-pi-down) is best-effort — if it failed
+# silently, the next jack_load would get a -01 suffix and the wiring
+# below would silently no-op, breaking the link. Clean up here so load
+# always starts fresh.
+while read -r client; do
+    [ -n "$client" ] || continue
+    jack_unload "$client" 2>/dev/null || true
+done < <(JACK_PROMISCUOUS_SERVER=jack JACK_NO_START_SERVER=1 jack_lsp -l 2>/dev/null | \
+         awk '/^netadapter(-[0-9]+)?:/ { sub(/:.*/, ""); print }' | sort -u)
+
 # netadapter port labels are slave-local (see pi-stomp.md:77):
 #   playback_* = TO master  (audio we send to the Mac)  → -P
 #   capture_*  = FROM master (audio we receive from the Mac) → -C

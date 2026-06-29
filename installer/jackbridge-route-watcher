@@ -97,6 +97,46 @@ if [ -n "$new_iface" ] && ! is_wifi_iface "$new_iface"; then
         else
             echo "jackbridge-route-watcher: ethernet up on $new_iface — jackd enabled" >&2
         fi
+
+        # Background: listen for the pi's netJACK2 discovery packets (UDP to
+        # 225.3.19.154:19000) and pin a host route on the wired interface for
+        # each source IP we see. Without this, ARP requests for the pi's
+        # link-local address go out every interface matching 169.254/16, and
+        # the wifi router's proxy-ARP reply often wins — poisoning the cache
+        # with the router's MAC. An interface-scoped host route restricts ARP
+        # resolution to the wired interface only — the router never sees the
+        # probe. The pi's reply teaches the kernel the correct MAC on en7;
+        # continuous netJACK2 audio traffic keeps the ARP entry warm thereafter.
+        #
+        # We use `route add -host -interface` rather than `ping -b` because
+        # the route-watcher's own ARP flush (above) would delete any
+        # ping-learned ARP entry on the next network-change cycle. A host
+        # route is persistent across ARP flushes and survives until explicitly
+        # removed or the interface goes down.
+        # tcpdump uses BPF which is root-only (we're a LaunchDaemon).
+        (
+            while :; do
+                tcpdump -i "$new_iface" -c 1 -n 'udp dst port 19000' 2>/dev/null | \
+                awk '{
+                    for(i=1;i<=NF;i++)
+                        if(match($i,/^225\.3\.19\.154\.19000:?$/)) {
+                            split($(i-2),a,".")
+                            print a[1]"."a[2]"."a[3]"."a[4]
+                            exit
+                        }
+                }' | while read pi_ip; do
+                    if [ -n "$pi_ip" ]; then
+                        # Add an interface-scoped host route. This restricts
+                        # ARP resolution to the wired interface — the wifi
+                        # router never sees the request and can't proxy-ARP
+                        # a reply. The route is idempotent; if it already
+                        # exists, the add is a no-op.
+                        /sbin/route -n add -host "$pi_ip" -interface "$new_iface" >/dev/null 2>&1 || true
+                        echo "jackbridge-route-watcher: pinned $pi_ip to $new_iface" >&2
+                    fi
+                done
+            done
+        ) &
     fi
 else
     # No ethernet (or fell back to wifi).
