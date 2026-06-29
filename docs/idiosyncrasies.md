@@ -89,6 +89,18 @@ The user-visible device name (e.g. `"Steinberg UR22C"`, the same string Audio MI
 ### `jackd -d coreaudio` does **not** take exclusive control of the device
 Even while jackd is bound to a CoreAudio device, that device remains available as a system output — apps can play through it and the audio mixes with whatever's going through jackd. Useful (system audio keeps working during development) but a trap: **if the user sets the same device as both jackd's backend and the system output, they get a feedback loop / mix-of-everything** with no clear error. The aggregate-device strategy (built-in output as the aggregate's sub-device) avoids this for production, since the user is unlikely to pick the aggregate as their normal system output. Pass `-H`/`--hog` to force exclusive access if needed; we don't, to allow side-by-side dev workflows.
 
+## netJACK2 slave reconnection — stale master entries
+
+When a netJACK2 slave disconnects (e.g. `pi-stomp-jackbridge.service` restart), the Mac's netmanager (`JackNetMasterManager`) does **not** immediately clean up the stale `JackNetMaster` entry. Cleanup only happens when the master's socket error path sends a `KILL_MASTER` multicast packet, which the netmanager's `Run()` loop processes. If the slave reconnects before the Mac detects the socket error, `jack_client_open("pistomp")` fails because a JACK client with that name still exists — JACK appends `-01`, creating a duplicate slave that fights the original for the same network stream. This produces `WriteResample` / `ringbuffer failure` errors on the pi side and XRuns on both sides.
+
+**Mitigation in `pi/bin/jackbridge-pi-up:57-64`:** A 3-second `sleep` (line 64) between `jack_unload` (line 53) and `jack_load` (line 70) gives the Mac time to detect the socket error and clean up the stale entry. This is a timing workaround — the jack2 fork has no name-based deduplication or timeout-based cleanup for stale slaves. See `common/JackNetManager.cpp:865-913` (`InitMaster`), `common/JackNetManager.cpp:928-943` (`KillMaster`), and `common/JackNetManager.cpp:915-926` (`FindMaster` — searches by ID only, not name).
+
+## Proxy-ARP poisoning on link-local unicast
+
+Even with the netJACK2 multicast group correctly pinned to the wired interface via `JACK_NETJACK_MULTICAST_IF`, the Mac's kernel sends ARP requests for the pi's link-local IP out **every** interface matching `169.254/16` (en7 + en0). The wifi router proxy-ARPs a reply with its own MAC on en0, which often arrives before the pi's real reply on en7, poisoning the cache. The fix is an interface-scoped host route (`route add -host <pi-ip> -interface <iface>`) that restricts ARP resolution to the wired interface. Since multicast packets don't trigger ARP learning on XNU, the `jackbridge-route-watcher` LaunchDaemon runs a background `tcpdump` loop on the wired interface to capture the pi's netJACK2 discovery (UDP to `225.3.19.154:19000`), extracts the source IP, and pins the host route. See `installer/jackbridge-route-watcher:101-131`.
+
+**macOS `ping -I` caveat:** `ping -I <iface>` does not bind the ARP request to the interface on macOS — it uses `-b <iface>` instead. The route-watcher originally used `ping -I` which silently failed to pin ARP. Fixed to use `route add -host -interface`, which is persistent across ARP flushes and survives until the interface goes down.
+
 ## Naming
 
 The repo is called `JackRouter` but the code is called `JackBridge`. The README explains this — the previous name was "JackRouter" (an actual CoreAudio router that lived in the JACK graph), and the rename reflects that the current design is "out of JACK graph scope" — CoreAudio apps connect via a bridge device, not as JACK ports. Don't be confused by the inconsistency.
