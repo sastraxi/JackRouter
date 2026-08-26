@@ -31,6 +31,19 @@ It's easy to forget the order of operations. Follow these steps to get audio flo
 | ModOut1/2  | Post-mod-host wet (the pedalboard tone)          |
 | **Out1/2** | Stereo monitor return back to the pi             |
 
+
+### Menu-bar app: PiStomp Companion
+
+`PiStompCompanion.app` (installed to `/Applications`) shows the stack at a
+glance from the menu bar: pi-Stomp reachability (icon dims when unplugged),
+a badge for audio state (amber = reachable but not in the JACK graph,
+green = linked/streaming, red = shm protocol mismatch), start/stop/restart
+shortcuts, and one-click SSH / MOD-UI. **Network Diagnostics…** collects a
+battery of unprivileged probes into `~/Library/Logs/JackBridge/` and opens
+it in Console.app — run it when the pi won't connect and include the log in
+any bug report. The app only *reads* the shared-memory region; it never
+contends with the daemon.
+
 ---
 
 ## When it doesn't work (Troubleshooting)

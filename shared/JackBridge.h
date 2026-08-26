@@ -90,6 +90,29 @@ static_assert(std::atomic<uint64_t>::is_always_lock_free,
 // 0x20000     : Upstream buffer #0 (Driver -> Application)
 // 0x28000     : Downstream buffer #0 (Application -> Driver)
 
+// Byte offsets of the control fields within the shm region. Single source of
+// truth — attach_shm() and any external read-only reader (e.g. the
+// PiStompCompanion menu-bar app) must use these, not hand-copied literals.
+// Mirrors the map comment above. Layout changes here require a
+// JACKBRIDGE_PROTOCOL_VERSION bump.
+#define JB_OFF_NUMBER_TIMESTAMPS   (0x100)
+#define JB_OFF_ZERO_HOST_TIME      (0x108)
+#define JB_OFF_SEED                (0x110)
+#define JB_OFF_SYNC_MODE           (0x118)
+#define JB_OFF_BUFFER_SIZE         (0x120)
+#define JB_OFF_DRIVER_STATUS       (0x128)
+#define JB_OFF_PROTOCOL_VERSION    (0x130)
+#define JB_OFF_DAEMON_ALIVE        (0x138)
+#define JB_OFF_HAL_ANCHOR_SEQ      (0x140)
+#define JB_OFF_HAL_ANCHOR_HOSTTIME (0x148)
+#define JB_OFF_HAL_ANCHOR_SAMPLETIME (0x150)
+#define JB_OFF_HAL_INPUT_READ_HEAD (0x158)
+#define JB_OFF_HAL_OUTPUT_WRITE_HEAD (0x160)
+#define JB_OFF_HAL_NFRAMES         (0x168)
+#define JB_OFF_HAL_SAMPLE_RATE     (0x170)
+#define JB_OFF_READ_FRAME_NUMBER(i)  (0x180+(i)*0x10)
+#define JB_OFF_WRITE_FRAME_NUMBER(i) (0x188+(i)*0x10)
+
 typedef float sample_t;
 #define AUDIO_SAMPLE_SIZE (sizeof(sample_t))
 // pi-stomp recording layout: 4-in (HW capture L/R + mod-host wet L/R) / 2-out.
@@ -205,30 +228,28 @@ protected:
             return -1;
         }
 
-        shmNumberTimeStamps = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+0x100);
-        shmZeroHostTime = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+0x108);
-        shmSeed = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+0x110);
-        shmSyncMode = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+0x118);
-        shmBufferSize = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+0x120);
-        shmDriverStatus = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+0x128);
-        shmProtocolVersion = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+0x130);
-        shmDaemonAlive = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+0x138);
-        shmHalAnchorSeq        = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+0x140);
-        shmHalAnchorHostTime   = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+0x148);
-        shmHalAnchorSampleTime = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+0x150);
-        shmHalInputReadHead    = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+0x158);
-        shmHalOutputWriteHead  = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+0x160);
-        shmHalNFrames          = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+0x168);
-        shmHalSampleRate       = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+0x170);
+        shmNumberTimeStamps = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+JB_OFF_NUMBER_TIMESTAMPS);
+        shmZeroHostTime = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+JB_OFF_ZERO_HOST_TIME);
+        shmSeed = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+JB_OFF_SEED);
+        shmSyncMode = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+JB_OFF_SYNC_MODE);
+        shmBufferSize = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+JB_OFF_BUFFER_SIZE);
+        shmDriverStatus = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+JB_OFF_DRIVER_STATUS);
+        shmProtocolVersion = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+JB_OFF_PROTOCOL_VERSION);
+        shmDaemonAlive = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+JB_OFF_DAEMON_ALIVE);
+        shmHalAnchorSeq        = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+JB_OFF_HAL_ANCHOR_SEQ);
+        shmHalAnchorHostTime   = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+JB_OFF_HAL_ANCHOR_HOSTTIME);
+        shmHalAnchorSampleTime = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+JB_OFF_HAL_ANCHOR_SAMPLETIME);
+        shmHalInputReadHead    = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+JB_OFF_HAL_INPUT_READ_HEAD);
+        shmHalOutputWriteHead  = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+JB_OFF_HAL_OUTPUT_WRITE_HEAD);
+        shmHalNFrames          = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+JB_OFF_HAL_NFRAMES);
+        shmHalSampleRate       = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+JB_OFF_HAL_SAMPLE_RATE);
 
         for(int i=0; i<MAX_STREAMS; i++) {
             buf_up[i]   = (sample_t*)(shm_base + STRBUF_UP(i));
             buf_down[i] = (sample_t*)(shm_base + STRBUF_DOWN(i));
             // +i*0x10 was missing on shmReadFrameNumber, aliasing stream 1 to
-            // stream 0 — a latent bug that didn't bite because the daemon only
-            // writes stream 0 today.
-            shmReadFrameNumber[i]  = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+0x180+i*0x10);
-            shmWriteFrameNumber[i] = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+0x188+i*0x10);
+            shmReadFrameNumber[i]  = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+JB_OFF_READ_FRAME_NUMBER(i));
+            shmWriteFrameNumber[i] = reinterpret_cast<std::atomic<uint64_t>*>(shm_base+JB_OFF_WRITE_FRAME_NUMBER(i));
         }
         
         return 0;

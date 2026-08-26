@@ -75,6 +75,15 @@ xcodebuild "${XCBUILD_ARGS[@]}" -target JackBridgePlugIn clean build >/dev/null
 xcodebuild "${XCBUILD_ARGS[@]}" -target JackBridged build >/dev/null
 xcodebuild "${XCBUILD_ARGS[@]}" -target jb-detect-builtin build >/dev/null
 
+echo "==> Building PiStompCompanion menu-bar app"
+APP_ARGS=(-project "$ROOT/app/PiStompCompanion.xcodeproj" -target PiStompCompanion
+    -configuration Release ARCHS="${ARCHS:-arm64}" ONLY_ACTIVE_ARCH=NO)
+if [[ -n "${SIGN_APP_IDENTITY:-}" ]]; then
+    APP_ARGS+=(CODE_SIGN_IDENTITY="$SIGN_APP_IDENTITY" CODE_SIGN_STYLE=Manual OTHER_CODE_SIGN_FLAGS="--timestamp")
+fi
+xcodebuild "${APP_ARGS[@]}" build >/dev/null
+APP_BUILD_DIR="$ROOT/app/build/Release"
+
 # rmshm is a 5-line shm_unlink utility — not worth its own Xcode target.
 # Shipped so users can recover after a JACKBRIDGE_PROTOCOL_VERSION bump
 # without bootcycling agents by hand.
@@ -94,6 +103,8 @@ install -m 0644 "$INSTALLER/config.plist"          "$STAGING/Library/Application
 install -m 0644 "$INSTALLER/launchagents/com.jackbridge.daemon.plist" "$STAGING/Library/LaunchAgents/"
 install -m 0644 "$INSTALLER/launchagents/com.jackbridge.jackd.plist"  "$STAGING/Library/LaunchAgents/"
 install -m 0644 "$INSTALLER/launchdaemons/com.jackbridge.route.plist" "$STAGING/Library/LaunchDaemons/"
+mkdir -p "$STAGING/Applications"
+cp -R "$APP_BUILD_DIR/PiStompCompanion.app" "$STAGING/Applications/"
 
 echo "==> pkgbuild (component)"
 COMPONENT_PKG="$BUILD/JackBridge-component.pkg"

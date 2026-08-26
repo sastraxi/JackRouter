@@ -13,6 +13,7 @@ shared/      JackBridge.h — the IPC contract header, jb_log.hpp
 installer/   build-pkg.sh, LaunchAgents, helper binaries, postinstall
 pi/          systemd service + helpers for the pi-stomp side
 tools/       chkshm / rmshm shm utilities, jackbridge-ctl
+app/         PiStompCompanion menu-bar app (separate Xcode project)
 docs/        Architecture, setup, idiosyncrasies, spike results
 ```
 
